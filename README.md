@@ -7,7 +7,9 @@
 
 Ghosttex 基于 [Ghostty](https://github.com/ghostty-org/ghostty)，在终端内部识别、排版和缓存 TeX 公式。公式与普通文字共用终端绘制路径，无需为 shell 中的程序添加专用适配器。
 
-> **实验阶段，暂缓正式发布。** 当前 0.1.1 用于动态布局测试。编译为 ReleaseFast 表示启用了编译优化，不代表已经完成日常使用验收。真实程序中的快速滚动、选择、输入和局部刷新仍需验证。
+**当前发布版本：0.1.1。** 从 [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest) 下载 macOS Apple Silicon 安装包及 SHA-256 校验文件。动态公式布局仍在持续改进；发布包通过的自动检查及已知限制见下文，真实程序中的快速滚动、选择、输入和局部刷新仍需持续验证。
+
+解压 ZIP 后，将 `Ghosttex.app` 拖入 `/Applications`，再从应用程序目录打开。安装包使用本地 ad hoc 签名，未进行 Developer ID 签名或公证，macOS 可能要求在“系统设置 → 隐私与安全性”中允许首次打开。当前仅提供 arm64 安装包，并在本机 macOS 26 上验证；更早系统尚未验收。
 
 ## 能做什么
 
@@ -19,7 +21,7 @@ Ghosttex 基于 [Ghostty](https://github.com/ghostty-org/ghostty)，在终端内
 
 当前验证重点是 **macOS / Metal**。Linux / OpenGL 共用布局代码，但本轮未完成 Linux GUI 验证；Windows 图标资源已同步，不表示已有可用的 Windows 版本。
 
-## 构建 macOS 测试包
+## 构建 macOS Release 包
 
 需要仓库指定的 **Zig 0.17.0**、**Rust 1.90.0**、Xcode 26+、macOS 26 SDK 和 Metal Toolchain。先完成 Xcode 首次启动及所需组件安装。
 
@@ -35,7 +37,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 "$PWD/dist/ghosttex-macos-local/Ghosttex.app/Contents/MacOS/ghosttex"
 ```
 
-应用使用本地 ad hoc 签名，未进行 Developer ID 签名或公证。Ghosttex 不连接上游 Ghostty 的自动更新源；本仓库没有将测试构建视为正式发行版。
+应用使用本地 ad hoc 签名，未进行 Developer ID 签名或公证。Ghosttex 不连接上游 Ghostty 的自动更新源；更新请从本仓库的 Releases 页面下载。
 
 ## 配置
 

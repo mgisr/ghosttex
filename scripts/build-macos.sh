@@ -56,6 +56,9 @@ codesign --force --sign - --timestamp=none "$app_path/Contents/MacOS/ghosttex-ma
 codesign --force --deep --sign - --timestamp=none "$app_path"
 codesign --verify --deep --strict "$app_path"
 ditto -c -k --sequesterRsrc --keepParent "$app_path" "$zip_path"
-shasum -a 256 "$zip_path" > "$zip_path.sha256"
+(
+  cd "$output_dir"
+  shasum -a 256 "$(basename "$zip_path")" > "$(basename "$zip_path").sha256"
+)
 printf 'Release app: %s\nArchive: %s\n' "$app_path" "$zip_path"
 printf 'Launch with math enabled:\n  "%s/Contents/MacOS/ghosttex" --math-rendering=true --math-single-dollar=true\n' "$app_path"

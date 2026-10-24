@@ -22,6 +22,9 @@ concurrency:
 
 jobs:
   setup:
+    # This workflow requires Ghostty's private runners, signing keys and R2.
+    # Fork releases are built locally and uploaded to their own GitHub Releases.
+    if: github.repository == 'ghostty-org/ghostty'
     runs-on: namespace-profile-ghostty-sm
     outputs:
       version: ${{ steps.extract_version.outputs.version }}
