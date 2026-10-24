@@ -853,6 +853,7 @@ pub fn deinit(self: *Surface) void {
     // stops the display link for good.
     self.renderer.deinit();
     self.renderer_thread.deinit();
+    self.renderer_state.math.deinit(self.alloc);
     self.io_thread.deinit();
     self.mouse.selection_gesture.deinit(&self.io.terminal);
     self.io.deinit();
@@ -2230,9 +2231,13 @@ pub fn imePointScaled(self: *const Surface, scale: apprt.ContentScale) apprt.IME
 
     // Our sizes are all scaled so we need to send the unscaled values back.
 
+    const visual = @constCast(&self.renderer_state.math).position(global.io(), cursor.x, cursor.y);
+    const visual_x: u32 = if (visual) |p| p.x else cursor.x;
+    const visual_y: u32 = if (visual) |p| @intCast(@max(p.y, 0)) else cursor.y;
+    const shift: u32 = if (visual) |p| @intCast(@max(p.baseline_shift, 0)) else 0;
     const x: f64 = x: {
         // Simple x * cell width gives the top-left corner, then add padding offset
-        var x: f64 = @floatFromInt(cursor.x * self.size.cell.width + self.size.padding.left);
+        var x: f64 = @floatFromInt(visual_x * self.size.cell.width + self.size.padding.left);
 
         // We want the midpoint
         x += @as(f64, @floatFromInt(self.size.cell.width)) / 2;
@@ -2245,7 +2250,7 @@ pub fn imePointScaled(self: *const Surface, scale: apprt.ContentScale) apprt.IME
 
     const y: f64 = y: {
         // Simple y * cell height gives the top-left corner, then add padding offset
-        var y: f64 = @floatFromInt(cursor.y * self.size.cell.height + self.size.padding.top);
+        var y: f64 = @floatFromInt(visual_y * self.size.cell.height + self.size.padding.top + shift);
 
         // We want the bottom
         y += @floatFromInt(self.size.cell.height);
@@ -3753,7 +3758,11 @@ pub fn scrollCallback(
             // Modify our viewport, this requires a lock since it affects
             // rendering. We have to switch signs here because our delta
             // is negative down but our viewport is positive down.
-            self.io.terminal.scrollViewport(.{ .delta = y.delta * -1 });
+            const remainder = self.renderer_state.math.wheel(global.io(), y.delta);
+            if (remainder != 0) {
+                self.renderer_state.math.resetScroll(global.io());
+                self.io.terminal.scrollViewport(.{ .delta = remainder * -1 });
+            }
         }
     }
 
@@ -4889,11 +4898,12 @@ pub fn colorSchemeCallback(self: *Surface, scheme: apprt.ColorScheme) !void {
     self.queueIo(.{ .color_scheme_report = .{ .force = false } }, .unlocked);
 }
 
-pub fn posToViewport(self: Surface, xpos: f64, ypos: f64) terminal.point.Coordinate {
+pub fn posToViewport(self: *const Surface, xpos: f64, ypos: f64) terminal.point.Coordinate {
     // Get our grid cell
     const coord: rendererpkg.Coordinate = .{ .surface = .{ .x = xpos, .y = ypos } };
     const grid = coord.convert(.grid, self.size).grid;
-    return .{ .x = grid.x, .y = grid.y };
+    const point = @constCast(&self.renderer_state.math).hit(global.io(), grid.x, grid.y);
+    return .{ .x = point.x, .y = point.y };
 }
 
 /// Scroll to the bottom of the viewport.
@@ -4973,6 +4983,11 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
     }
 
     switch (action.scoped(.surface).?) {
+        .toggle_math_rendering => {
+            self.renderer_state.math.disabled.store(!self.renderer_state.math.disabled.load(.monotonic), .monotonic);
+            self.renderer_state.math.resetScroll(global.io());
+            try self.queueRender();
+        },
         .csi, .esc => |data| {
             // We need to send the CSI/ESC sequence as a single write request.
             // If you split it across two then the shell can interpret it

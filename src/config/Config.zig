@@ -126,6 +126,25 @@ pub const compatibility = std.StaticStringMap(
 /// Available since 1.3.0.
 language: ?[:0]const u8 = null,
 
+/// Render closed Markdown math in output using native RaTeX. Requires a build
+/// with `-Dmath=true`. The logical PTY grid and copied source remain unchanged.
+/// Alternate screens, mouse-reporting applications, and unknown Markdown
+/// context retain source. Configure protected rows for a fixed-input CLI.
+@"math-rendering": bool = false,
+
+/// Recognize heuristic single-dollar math in addition to explicit delimiters.
+/// Leave disabled for arbitrary shell output containing prices or variables.
+@"math-single-dollar": bool = false,
+
+/// Treat output as original Markdown, overriding guards for CLIs known to
+/// remove math/code delimiters. Use only with an adapter preserving source.
+/// This cannot reconstruct Markdown already transformed by a CLI.
+@"math-raw-output": bool = false,
+
+/// Number of bottom rows to keep at their application coordinates while the
+/// viewport follows live output. The cursor's row is always protected too.
+@"math-protected-bottom-rows": u16 = 0,
+
 /// The font families to use.
 ///
 /// You can generate the list of valid values using the CLI:
@@ -4921,6 +4940,11 @@ pub fn finalize(self: *Config) !void {
 
     // Clamp our contrast
     self.@"minimum-contrast" = @min(21, @max(1, self.@"minimum-contrast"));
+
+    if (self.@"math-rendering" and !@import("build_options").math) {
+        try self.addDiagnosticFmt("math-rendering requires a build with -Dmath=true", .{});
+        self.@"math-rendering" = false;
+    }
 
     // Minimum window size
     if (self.@"window-width" > 0) self.@"window-width" = @max(10, self.@"window-width");

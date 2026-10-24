@@ -28,6 +28,8 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Terminal = terminal.Terminal;
 const Health = renderer.Health;
 const compat_file = @import("../lib/compat/file.zig");
+const MathScreen = @import("../math/Screen.zig");
+const NativeMath = @import("../math/Native.zig");
 
 const getConstraint = @import("../font/nerd_font_attributes.zig").getConstraint;
 
@@ -47,6 +49,11 @@ const DisplayLink = switch (builtin.target.os.tag) {
 };
 
 const log = std.log.scoped(.generic_renderer);
+
+fn mathWake(userdata: ?*anyopaque) callconv(.c) void {
+    const thread: *renderer.Thread = @ptrCast(@alignCast(userdata orelse return));
+    thread.wakeup.notify() catch {};
+}
 
 /// Create a renderer type with the provided graphics API wrapper.
 ///
@@ -273,6 +280,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// The render state we update per loop.
         terminal_state: terminal.RenderState = .empty,
+        math_screen: MathScreen = .{},
+        math_cells: cellpkg.Contents = .{},
+        math_interaction: ?*@import("../math/Interaction.zig") = null,
+        math_thread: ?*renderer.Thread = null,
+        math_ready_count: usize = 0,
 
         /// The number of frames since the last terminal state reset.
         /// We reset the terminal state after ~100,000 frames (about 10 to
@@ -623,6 +635,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             background_blur: configpkg.Config.BackgroundBlur,
             scroll_to_bottom_on_output: bool,
             custom_shader_animation: configpkg.CustomShaderAnimation,
+            math_rendering: bool,
+            math_single_dollar: bool,
+            math_raw_output: bool,
+            math_protected_bottom_rows: u16,
 
             pub fn init(
                 alloc_gpa: Allocator,
@@ -698,6 +714,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .background_blur = config.@"background-blur",
                     .scroll_to_bottom_on_output = config.@"scroll-to-bottom".output,
                     .custom_shader_animation = config.@"custom-shader-animation",
+                    .math_rendering = config.@"math-rendering",
+                    .math_single_dollar = config.@"math-single-dollar",
+                    .math_raw_output = config.@"math-raw-output",
+                    .math_protected_bottom_rows = config.@"math-protected-bottom-rows",
                     .arena = arena,
                 };
             }
@@ -839,6 +859,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.math_screen.deinit(self.alloc);
+            self.math_cells.deinit(self.alloc);
             // This only deinitializes and frees CPU-side state
             // and does not free GPU resources like the swap chain and
             // shaders. Those are freed with `releaseGpuResources`.
@@ -1403,6 +1425,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 preedit: ?renderer.State.Preedit,
                 scrollbar: terminal.Scrollbar,
                 overlay_features: []const Overlay.Feature,
+                math_allowed: bool,
+                math_history_start: bool,
+                math_epoch: usize,
+                math_at_bottom: bool,
             };
 
             // Update all our data as tightly as possible within the mutex.
@@ -1481,6 +1507,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // denormalization) is deferred to the endUpdate call
                 // outside of this critical section, keeping our lock
                 // hold time as short as possible.
+                if (comptime NativeMath.available) self.terminal_state.overscan_request.above = if (self.config.math_rendering) 128 else 0;
+                if (comptime NativeMath.available) self.terminal_state.overscan_request.below = if (self.config.math_rendering) 128 else 0;
                 try self.terminal_state.beginUpdate(
                     self.alloc,
                     state.terminal,
@@ -1558,6 +1586,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .preedit = preedit,
                     .scrollbar = scrollbar,
                     .overlay_features = overlay_features,
+                    .math_allowed = state.terminal.screens.active_key == .primary and
+                        state.terminal.flags.mouse_event == .none and state.terminal.screens.active.kitty_images.images.count() == 0,
+                    .math_history_start = self.terminal_state.row_data.get(self.terminal_state.rowDataRange().start).pin.eql(state.terminal.screens.active.pages.getTopLeft(.screen)),
+                    .math_epoch = state.terminal.screens.generation(.primary),
+                    .math_at_bottom = state.terminal.screens.active.pages.viewport == .active,
                 };
             };
 
@@ -1584,10 +1617,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // Clear the prior highlights
                 const row_data = self.terminal_state.row_data.slice();
+                const captured = self.terminal_state.rowDataRange();
                 var any_dirty: bool = false;
                 for (
-                    row_data.items(.highlights),
-                    row_data.items(.dirty),
+                    row_data.items(.highlights)[captured.start..captured.end],
+                    row_data.items(.dirty)[captured.start..captured.end],
                 ) |*highlights, *dirty| {
                     if (highlights.items.len > 0) {
                         highlights.clearRetainingCapacity();
@@ -1663,6 +1697,77 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     comptime assert(@TypeOf(err) == error{OutOfMemory});
                     log.warn("error rebuilding GPU cells err={}", .{err});
                 };
+
+                if (comptime NativeMath.available) {
+                    self.math_interaction = &state.math;
+                    const was_active = self.math_screen.projection.active;
+                    const enabled = self.config.math_rendering and critical.math_allowed and
+                        !state.math.disabled.load(.monotonic) and critical.overlay_features.len == 0;
+                    if (enabled and self.math_screen.worker == null) {
+                        self.math_screen.worker = NativeMath.Worker.init(mathWake, self.math_thread) catch null;
+                    }
+                    const rows = self.terminal_state.rows;
+                    var body_end = rows;
+                    if (critical.math_at_bottom) body_end -|= self.config.math_protected_bottom_rows;
+                    var output_end = body_end;
+                    if (self.terminal_state.cursor.viewport) |cursor| output_end = @min(output_end, cursor.y);
+                    self.math_screen.update(self.alloc, &self.terminal_state, .{
+                        .enabled = enabled,
+                        .single_dollar = self.config.math_single_dollar,
+                        .raw_output = self.config.math_raw_output,
+                        .include_below = !critical.math_at_bottom and self.terminal_state.cursor.viewport == null,
+                        .history_start = critical.math_history_start,
+                        .epoch = critical.math_epoch,
+                        .body_end = body_end,
+                        .output_end = output_end,
+                        .cell_width = self.grid_metrics.cell_width,
+                        .cell_height = self.grid_metrics.cell_height,
+                        .cell_baseline = self.grid_metrics.cell_baseline,
+                        .font_px = @floatCast(self.grid_metrics.face_height),
+                        .foreground = .{ self.terminal_state.colors.foreground.r, self.terminal_state.colors.foreground.g, self.terminal_state.colors.foreground.b, 255 },
+                        .scroll = state.math.requestedScroll(global.io()),
+                    }) catch |err| {
+                        self.math_screen.projection.active = false;
+                        self.math_screen.snapshot_valid = false;
+                        log.warn("math source fallback err={}", .{err});
+                    };
+                    if (self.math_ready_count != self.math_screen.ready.items.len) {
+                        self.math_ready_count = self.math_screen.ready.items.len;
+                        if (self.math_screen.worker) |*worker| {
+                            const stats = worker.stats();
+                            log.debug("math frame ready={} candidates={} renders={} hits={} queue={} cpu_bytes={} render_ns={}", .{
+                                self.math_ready_count, self.math_screen.candidates.items.len, stats.renders,
+                                stats.cache_hits,      stats.queued,                          stats.cpu_bytes,
+                                stats.render_ns,
+                            });
+                        }
+                    }
+                    if (self.math_screen.projection.active) {
+                        self.images.mathUpdate(self.alloc, &self.math_screen, self.grid_metrics.cell_width, self.grid_metrics.cell_height) catch |err| {
+                            self.math_screen.projection.active = false;
+                            self.images.math_placements.clearRetainingCapacity();
+                            log.warn("math texture fallback err={}", .{err});
+                        };
+                        if (self.math_screen.projection.active) @import("math.zig").compose(
+                            self.alloc,
+                            &self.cells,
+                            &self.math_cells,
+                            &self.math_screen.projection,
+                            self.grid_metrics.cell_height,
+                            self.grid_metrics.cell_width,
+                        ) catch {
+                            self.math_screen.projection.active = false;
+                            self.images.math_placements.clearRetainingCapacity();
+                        };
+                    } else {
+                        self.images.math_placements.clearRetainingCapacity();
+                        if (!enabled) self.images.mathClear();
+                    }
+                    if (was_active or self.math_screen.projection.active) {
+                        self.images_rebuilt = true;
+                        self.cells_rebuilt = true;
+                    }
+                }
 
                 // The scrollbar is only emitted during draws so we also
                 // check the scrollbar cache here and update if needed.
@@ -1875,9 +1980,26 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             try self.updateCustomShaderUniformsForFrame();
 
             // Setup our frame data
-            try frame.uniforms.sync(&.{self.uniforms});
-            try frame.cells_bg.sync(self.cells.bg_cells);
-            const fg_count = try frame.cells.syncFromArrayLists(self.cells.fg_rows);
+            var math_active = NativeMath.available and self.math_screen.projection.active and self.images.mathReady();
+            if (comptime NativeMath.available) if (self.math_interaction) |interaction| {
+                interaction.publish(self.alloc, global.io(), if (math_active) &self.math_screen.projection else null) catch {
+                    math_active = false;
+                };
+            };
+            var uniforms = self.uniforms;
+            if (math_active) {
+                const cursor = self.uniforms.cursor_pos;
+                const index = @as(usize, cursor[1]) * self.math_screen.projection.columns + cursor[0];
+                if (index < self.math_screen.projection.logical.items.len) {
+                    if (self.math_screen.projection.logical.items[index]) |p| {
+                        if (p.y >= 0 and p.y < self.math_screen.projection.rows) uniforms.cursor_pos = .{ p.x, @intCast(p.y) };
+                    }
+                }
+            }
+            const cells = if (math_active) &self.math_cells else &self.cells;
+            try frame.uniforms.sync(&.{uniforms});
+            try frame.cells_bg.sync(cells.bg_cells);
+            const fg_count = try frame.cells.syncFromArrayLists(cells.fg_rows);
 
             // If our background image buffer has changed, sync it.
             if (frame.bg_image_buffer_modified != self.bg_image_buffer_modified) {
@@ -1990,6 +2112,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .instance_count = fg_count,
                     },
                 });
+
+                if (math_active) self.images.draw(&self.api, self.shaders.pipelines.image, &pass, .math);
 
                 // Kitty images in front of text.
                 self.images.draw(
@@ -2218,6 +2342,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             self.config.deinit();
             self.config = config.*;
+            self.math_screen.snapshot_valid = false;
 
             // If our background image path changed, prepare the new bg image.
             if (bg_image_changed) try self.prepBackgroundImage();
@@ -2678,11 +2803,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Get our row data from our state
             const row_data = state.row_data.slice();
-            const row_raws = row_data.items(.raw);
-            const row_cells = row_data.items(.cells);
-            const row_dirty = row_data.items(.dirty);
-            const row_selection = row_data.items(.selection);
-            const row_highlights = row_data.items(.highlights);
+            const vp = state.viewportStart();
+            const end = vp + state.rows;
+            const row_raws = row_data.items(.raw)[vp..end];
+            const row_cells = row_data.items(.cells)[vp..end];
+            const row_dirty = row_data.items(.dirty)[vp..end];
+            const row_selection = row_data.items(.selection)[vp..end];
+            const row_highlights = row_data.items(.highlights)[vp..end];
 
             // If our cell contents buffer is shorter than the screen viewport,
             // we render the rows that fit, starting from the bottom. If instead
@@ -2772,7 +2899,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 const cursor_vp = state.cursor.viewport orelse break :cursor;
                 const cursor_style: terminal.Style = cursor_style: {
                     const cells = state.row_data.items(.cells);
-                    const cell = cells[cursor_vp.y].get(cursor_vp.x);
+                    const cell = cells[state.viewportStart() + cursor_vp.y].get(cursor_vp.x);
                     break :cursor_style if (cell.raw.hasStyling())
                         cell.style
                     else

@@ -144,6 +144,12 @@ fn actionCommands(action: Action.Key) []const Command {
         // ensures that the data returned is all in the binary and
         // and not pointing to the stack.
 
+        .toggle_math_rendering => if (@import("build_options").math) comptime &.{.{
+            .action = .toggle_math_rendering,
+            .title = i18n.N_("Toggle Math Source"),
+            .description = i18n.N_("Switch between native formulas and original TeX source."),
+        }} else &.{},
+
         .reset => comptime &.{.{
             .action = .reset,
             .title = i18n.N_("Reset Terminal"),

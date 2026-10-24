@@ -873,6 +873,10 @@ pub const Action = union(enum) {
     /// Only implemented on macOS.
     toggle_visibility,
 
+    /// Toggle this surface between native math and its original TeX source.
+    /// Requires math-rendering configuration and a build with -Dmath=true.
+    toggle_math_rendering,
+
     /// Toggle the window background opacity between transparent and opaque.
     ///
     /// This does nothing when `background-opacity` is set to 1 or above.
@@ -1427,6 +1431,7 @@ pub const Action = union(enum) {
             .toggle_window_float_on_top,
             .toggle_secure_input,
             .toggle_mouse_reporting,
+            .toggle_math_rendering,
             .toggle_command_palette,
             .toggle_background_opacity,
             .show_on_screen_keyboard,

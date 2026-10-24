@@ -35,4 +35,8 @@ test {
     std.testing.log_level = std.log.Level.err;
     _ = entrypoint;
     _ = @import("quirks_memset.zig");
+    _ = @import("math/Native.zig");
+    _ = @import("math/Layout.zig");
+    _ = @import("math/Screen.zig");
+    _ = @import("math/Interaction.zig");
 }

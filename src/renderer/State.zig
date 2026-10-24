@@ -18,6 +18,7 @@ mutex: *std.Io.Mutex,
 
 /// The terminal data.
 terminal: *terminalpkg.Terminal,
+math: @import("../math/Interaction.zig") = .{},
 
 /// The terminal inspector, if any. This will be null while the inspector
 /// is not active and will be set when it is active.

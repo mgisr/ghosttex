@@ -11,6 +11,8 @@ const Texture = GraphicsAPI.Texture;
 const Overlay = @import("Overlay.zig");
 
 const log = std.log.scoped(.renderer_image);
+const math_gpu_limit = 128 * 1024 * 1024;
+var math_gpu_bytes: std.atomic.Value(usize) = .init(0);
 
 /// Generic image rendering state for the renderer. This stores all
 /// images and their placements and exposes only a limited public API
@@ -46,6 +48,8 @@ pub const State = struct {
 
     /// Overlays
     overlay_placements: std.ArrayListUnmanaged(Placement),
+    math_placements: std.ArrayListUnmanaged(Placement),
+    math_tick: u64 = 0,
 
     pub const empty: State = .{
         .images = .empty,
@@ -55,16 +59,21 @@ pub const State = struct {
         .kitty_placements_generation = 0,
         .kitty_storage_generation = 0,
         .overlay_placements = .empty,
+        .math_placements = .empty,
     };
 
     pub fn deinit(self: *State, alloc: Allocator) void {
         {
             var it = self.images.iterator();
-            while (it.next()) |kv| kv.value_ptr.image.deinit(alloc);
+            while (it.next()) |kv| {
+                kv.value_ptr.image.deinit(alloc);
+                if (kv.value_ptr.math_bytes > 0) _ = math_gpu_bytes.fetchSub(kv.value_ptr.math_bytes, .monotonic);
+            }
             self.images.deinit(alloc);
         }
         self.kitty_placements.deinit(alloc);
         self.overlay_placements.deinit(alloc);
+        self.math_placements.deinit(alloc);
     }
 
     /// Upload any images to the GPU that need to be uploaded,
@@ -84,6 +93,7 @@ pub const State = struct {
             const img = &kv.value_ptr.image;
             if (img.isUnloading()) {
                 img.deinit(alloc);
+                if (kv.value_ptr.math_bytes > 0) _ = math_gpu_bytes.fetchSub(kv.value_ptr.math_bytes, .monotonic);
                 self.images.removeByPtr(kv.key_ptr);
                 continue;
             }
@@ -107,7 +117,82 @@ pub const State = struct {
         kitty_below_text,
         kitty_above_text,
         overlay,
+        math,
     };
+
+    pub fn mathClear(self: *State) void {
+        self.math_placements.clearRetainingCapacity();
+        var iterator = self.images.iterator();
+        while (iterator.next()) |entry| if (entry.key_ptr.* == .math) entry.value_ptr.image.markForUnload();
+    }
+
+    pub fn mathReady(self: *const State) bool {
+        for (self.math_placements.items) |placement| {
+            const entry = self.images.get(placement.image_id) orelse return false;
+            if (entry.image != .ready) return false;
+        }
+        return true;
+    }
+
+    pub fn mathUpdate(self: *State, alloc: Allocator, screen: *const @import("../math/Screen.zig"), cell_width: u32, cell_height: u32) !void {
+        self.math_placements.clearRetainingCapacity();
+        if (!screen.projection.active) return;
+        self.math_tick +%= 1;
+        // Mark the whole visible working set before choosing any LRU victims.
+        for (screen.ready.items) |ready| {
+            const id: Id = .{ .math = ready.id };
+            if (self.images.getPtr(id)) |entry| {
+                if (!entry.image.isUnloading()) {
+                    entry.math_used = self.math_tick;
+                    continue;
+                }
+                const old = self.images.fetchRemove(id).?.value;
+                var image = old.image;
+                image.deinit(alloc);
+                _ = math_gpu_bytes.fetchSub(old.math_bytes, .monotonic);
+            }
+        }
+        for (screen.ready.items) |*ready| {
+            const id: Id = .{ .math = ready.id };
+            if (self.images.getPtr(id)) |entry| {
+                entry.math_used = self.math_tick;
+            } else {
+                const bytes = ready.image.pixels().len;
+                while (true) {
+                    const current = math_gpu_bytes.load(.monotonic);
+                    if (current + bytes <= math_gpu_limit and math_gpu_bytes.cmpxchgWeak(current, current + bytes, .monotonic, .monotonic) == null) break;
+                    if (current + bytes <= math_gpu_limit) continue;
+                    // Evict this renderer's oldest texture not used in this
+                    // frame. A different surface's live resources are owned
+                    // by its graphics context and cannot be freed here.
+                    var candidate: ?Id = null;
+                    var oldest: u64 = std.math.maxInt(u64);
+                    var iterator = self.images.iterator();
+                    while (iterator.next()) |entry| if (entry.key_ptr.* == .math and entry.value_ptr.math_used < self.math_tick and entry.value_ptr.math_used < oldest) {
+                        candidate = entry.key_ptr.*;
+                        oldest = entry.value_ptr.math_used;
+                    };
+                    const victim = candidate orelse return error.MathTextureBudget;
+                    const old = self.images.fetchRemove(victim).?.value;
+                    var image = old.image;
+                    image.deinit(alloc);
+                    _ = math_gpu_bytes.fetchSub(old.math_bytes, .monotonic);
+                }
+                errdefer _ = math_gpu_bytes.fetchSub(bytes, .monotonic);
+                try self.prepImage(alloc, id, ready.id, .{ .width = ready.image.raw.width, .height = ready.image.raw.height, .pixel_format = .rgba, .data = @constCast(ready.image.pixels().ptr) });
+                const entry = self.images.getPtr(id).?;
+                entry.math_bytes = bytes;
+                entry.math_used = self.math_tick;
+            }
+        }
+        const bottom: i32 = @intCast(@as(u32, screen.projection.body_end) * cell_height);
+        for (screen.projection.placements.items) |placement| {
+            const top = @max(0, placement.y);
+            const end = @min(bottom, placement.y + @as(i32, @intCast(placement.height)));
+            if (end <= top) continue;
+            try self.math_placements.append(alloc, .{ .image_id = .{ .math = placement.image_id }, .layer = .above_text, .x = @divFloor(placement.x, @as(i32, @intCast(cell_width))), .y = @divFloor(top, @as(i32, @intCast(cell_height))), .z = 0, .width = placement.width, .height = @intCast(end - top), .cell_offset_x = @intCast(@mod(placement.x, @as(i32, @intCast(cell_width)))), .cell_offset_y = @intCast(@mod(top, @as(i32, @intCast(cell_height)))), .source_x = 0, .source_y = placement.source_y + @as(u32, @intCast(top - placement.y)), .source_width = placement.width, .source_height = @intCast(end - top) });
+        }
+    }
 
     /// Draw the given named set of placements.
     ///
@@ -125,6 +210,7 @@ pub const State = struct {
             .kitty_below_text => self.kitty_placements.items[self.kitty_bg_end..self.kitty_text_end],
             .kitty_above_text => self.kitty_placements.items[self.kitty_text_end..],
             .overlay => self.overlay_placements.items,
+            .math => self.math_placements.items,
         };
 
         for (placements) |p| {
@@ -310,7 +396,7 @@ pub const State = struct {
                         kv.value_ptr.image.markForUnload();
                     },
 
-                    .overlay => {},
+                    .overlay, .math => {},
                 }
             }
         }
@@ -395,7 +481,7 @@ pub const State = struct {
     };
 
     /// Prepare an image for upload to the GPU.
-    fn prepImage(
+    pub fn prepImage(
         self: *State,
         alloc: Allocator,
         id: Id,
@@ -531,6 +617,7 @@ pub const Id = union(enum) {
     /// Debug overlay. This is always composited down to a single
     /// image for now. In the future we can support layers here if we want.
     overlay,
+    math: u64,
 
     /// Z-ordering tie-breaker for images with the same z value.
     pub fn zLessThan(lhs: Id, rhs: Id) bool {
@@ -540,6 +627,7 @@ pub const Id = union(enum) {
                 // Kitty images always sort before (lower z) non-kitty images.
                 .kitty => true,
 
+                .math => std.meta.activeTag(rhs) == .overlay,
                 .overlay => false,
             };
         }
@@ -552,12 +640,15 @@ pub const Id = union(enum) {
 
             // No sensical ordering
             .overlay => return false,
+            .math => |id| return id < rhs.math,
         }
     }
 };
 
 /// The map used for storing images.
 pub const ImageMap = std.AutoHashMapUnmanaged(Id, struct {
+    math_bytes: usize = 0,
+    math_used: u64 = 0,
     image: Image,
 
     /// The generation of the terminal image this was created from
