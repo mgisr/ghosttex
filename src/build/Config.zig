@@ -33,6 +33,7 @@ wayland: bool = false,
 sentry: bool = true,
 simd: bool = true,
 i18n: bool = true,
+math: bool = false,
 wasm_shared: bool = true,
 
 /// Ghostty exe properties
@@ -264,6 +265,8 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         "gtk-x11",
         "Enables linking against X11 libraries when using the GTK rendering backend.",
     ) orelse gtk_targets.x11;
+
+    config.math = b.option(bool, "math", "Build the native RaTeX math renderer (requires Rust 1.90).") orelse false;
 
     config.i18n = b.option(
         bool,
@@ -692,6 +695,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "sentry", self.sentry);
     step.addOption(bool, "simd", self.simd);
     step.addOption(bool, "i18n", self.i18n);
+    step.addOption(bool, "math", self.math);
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);
@@ -798,6 +802,7 @@ pub fn fromOptions() Config {
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
         .i18n = options.i18n,
+        .math = options.math,
     };
 }
 

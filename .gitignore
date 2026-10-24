@@ -32,3 +32,7 @@ glad.zip
 vgcore.*
 
 /sprite_face_test*
+/native/ghosttex-math/target/
+/scripts/__pycache__/
+/test/ghosttex/__pycache__/
+/dist/ghosttex-macos-*/

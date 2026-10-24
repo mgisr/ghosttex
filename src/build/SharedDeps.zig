@@ -19,6 +19,8 @@ help_strings: HelpStrings,
 metallib: ?*MetallibStep,
 unicode_tables: UnicodeTables,
 framedata: GhosttyFrameData,
+math_library: ?std.Build.LazyPath,
+math_worker: ?std.Build.LazyPath,
 uucode_tables: std.Build.LazyPath,
 
 /// Singleton uucode module, instantiated once in `init` and reused
@@ -83,11 +85,14 @@ pub fn init(b: *std.Build, cfg: *const Config) !SharedDeps {
     // -Dexternal_uucode for this).
     try b.modules.put(b.allocator, b.dupe("uucode"), uucode_mod);
 
+    const math_artifacts = try @import("Math.zig").init(b, cfg);
     var result: SharedDeps = .{
         .config = cfg,
         .help_strings = try .init(b, cfg),
         .unicode_tables = try .init(b, uucode_tables),
         .framedata = try .init(b),
+        .math_library = if (math_artifacts) |a| a.library else null,
+        .math_worker = if (math_artifacts) |a| a.worker else null,
         .uucode_tables = uucode_tables,
         .uucode_mod = uucode_mod,
 
@@ -126,6 +131,7 @@ pub fn changeEntrypoint(
     result.config = config;
     result.options = b.addOptions();
     try config.addOptions(result.options);
+    if (self.math_worker) |worker| result.options.addOptionPath("math_worker_path", worker) else result.options.addOption([]const u8, "math_worker_path", "");
 
     return result;
 }
@@ -151,6 +157,7 @@ fn initTarget(
     // Setup our shared build options
     self.options = b.addOptions();
     try self.config.addOptions(self.options);
+    if (self.math_worker) |worker| self.options.addOptionPath("math_worker_path", worker) else self.options.addOption([]const u8, "math_worker_path", "");
 }
 
 pub fn add(
@@ -168,6 +175,18 @@ pub fn add(
     // we can build a single fat static library for the final app.
     var static_libs: LazyPathList = .empty;
     errdefer static_libs.deinit(b.allocator);
+
+    if (self.math_library) |library| {
+        if (target.result.cpu.arch != builtin.cpu.arch or target.result.os.tag != builtin.os.tag)
+            return error.NativeMathCrossCompilationUnsupported;
+        step.root_module.addObjectFile(library);
+        try static_libs.append(b.allocator, library);
+        if (target.result.os.tag == .linux) {
+            step.root_module.linkSystemLibrary("m", .{});
+            step.root_module.linkSystemLibrary("dl", .{});
+            step.root_module.linkSystemLibrary("pthread", .{});
+        }
+    }
 
     // WARNING: This is a hack!
     // If we're cross-compiling to Darwin then we don't add any deps.

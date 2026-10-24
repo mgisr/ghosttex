@@ -1,0 +1,28 @@
+[package]
+name = "ghosttex-math"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+ratex-parser = { git = "https://github.com/erweixin/RaTeX", rev = "28fa5a7c800172af00043270c0acc85bd0c60155" }
+ratex-layout = { git = "https://github.com/erweixin/RaTeX", rev = "28fa5a7c800172af00043270c0acc85bd0c60155" }
+ratex-types = { git = "https://github.com/erweixin/RaTeX", rev = "28fa5a7c800172af00043270c0acc85bd0c60155" }
+ratex-font = { git = "https://github.com/erweixin/RaTeX", rev = "28fa5a7c800172af00043270c0acc85bd0c60155" }
+ratex-font-loader = { git = "https://github.com/erweixin/RaTeX", rev = "28fa5a7c800172af00043270c0acc85bd0c60155", features = ["embed-fonts"] }
+ratex-svg = { git = "https://github.com/erweixin/RaTeX", rev = "28fa5a7c800172af00043270c0acc85bd0c60155", features = ["embed-fonts"] }
+ab_glyph = "=0.2.32"
+resvg = { version = "=0.45.1", default-features = false, features = ["raster-images"] }
+libc = "=0.2.191"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
