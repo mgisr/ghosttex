@@ -50,6 +50,19 @@ pub const Options = struct {
     max_source_bytes: usize = 16 * 1024,
 };
 
+pub const Checkpoint = struct {
+    offset: usize = 0,
+    code_ticks: usize = 0,
+    fence_char: u8 = 0,
+    fence_len: usize = 0,
+
+    pub fn restore(self: Checkpoint, iterator: *Iterator) void {
+        iterator.code_ticks = self.code_ticks;
+        iterator.fence_char = self.fence_char;
+        iterator.fence_len = self.fence_len;
+    }
+};
+
 pub const Iterator = struct {
     source: []const u8,
     options: Options,
@@ -57,6 +70,14 @@ pub const Iterator = struct {
     code_ticks: usize = 0,
     fence_char: u8 = 0,
     fence_len: usize = 0,
+    /// Optional caller-owned storage. Only hard-line starts outside formulas
+    /// become checkpoints; no allocation or history scan is needed here.
+    checkpoints: []Checkpoint = &.{},
+    checkpoint_count: usize = 0,
+    /// Hard-line message/prompt boundaries supplied by the host. Code and
+    /// incomplete formula context cannot leak into the next message.
+    boundaries: []const usize = &.{},
+    boundary_index: usize = 0,
 
     pub fn init(source: []const u8, options: Options) Iterator {
         return .{ .source = source, .options = options };
@@ -64,8 +85,18 @@ pub const Iterator = struct {
 
     pub fn next(self: *Iterator) ?Formula {
         while (self.pos < self.source.len) {
+            while (self.boundary_index < self.boundaries.len and self.boundaries[self.boundary_index] <= self.pos) {
+                self.code_ticks = 0;
+                self.fence_char = 0;
+                self.fence_len = 0;
+                self.boundary_index += 1;
+            }
             const start = self.pos;
             if (start == 0 or self.source[start - 1] == '\n') {
+                if (self.checkpoint_count < self.checkpoints.len) {
+                    self.checkpoints[self.checkpoint_count] = .{ .offset = start, .code_ticks = self.code_ticks, .fence_char = self.fence_char, .fence_len = self.fence_len };
+                    self.checkpoint_count += 1;
+                }
                 const end = lineEnd(self.source, start);
                 const line = self.source[start..end];
                 if (self.code_ticks == 0 and self.skipLine(line)) {
@@ -138,9 +169,10 @@ pub const Iterator = struct {
         return null;
     }
 
-    /// Top-level fenced and indented code. Container blocks (lists/quotes)
-    /// require a Markdown-aware adapter before using this recognizer.
-    fn skipLine(self: *Iterator, line: []const u8) bool {
+    /// Container prefixes are inspected only for code context; original TeX
+    /// bytes and offsets remain untouched.
+    fn skipLine(self: *Iterator, raw_line: []const u8) bool {
+        const line = codeLine(raw_line);
         var indent: usize = 0;
         while (indent < line.len and line[indent] == ' ') : (indent += 1) {}
         const is_indented = indent >= 4 or (indent < line.len and line[indent] == '\t');
@@ -177,19 +209,20 @@ pub const Iterator = struct {
 
     fn findClose(self: *const Iterator, begin: usize, delimiter: Delimiter) Close {
         var i = begin;
-        while (i < self.source.len) {
+        const limit = if (self.boundary_index < self.boundaries.len) self.boundaries[self.boundary_index] else self.source.len;
+        while (i < limit) {
             const c = self.source[i];
             if (c == '\n') {
                 if (!delimiter.display()) return .{ .advance = i };
                 // Do not let unfinished block math consume a Markdown fence or
                 // a new paragraph. Resume there so code context remains intact.
                 const end = lineEnd(self.source, i + 1);
-                const line = std.mem.trim(u8, self.source[i + 1 .. end], " \t\r");
+                const line = std.mem.trim(u8, codeLine(self.source[i + 1 .. end]), " \t\r");
                 if (line.len == 0 or std.mem.startsWith(u8, line, "```") or
                     std.mem.startsWith(u8, line, "~~~")) return .{ .advance = i + 1 };
             }
             if (c == '\\') {
-                if (i + 1 < self.source.len) {
+                if (i + 1 < limit) {
                     // A TeX backslash cannot erase a terminal hard newline.
                     if (self.source[i + 1] == '\n') {
                         i += 1;
@@ -242,6 +275,42 @@ fn whitespace(c: u8) bool {
 
 fn word(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+fn codeLine(line: []const u8) []const u8 {
+    var at: usize = 0;
+    while (true) {
+        var indent: usize = 0;
+        while (at + indent < line.len and line[at + indent] == ' ' and indent < 3) : (indent += 1) {}
+        const start = at + indent;
+        if (start >= line.len) return line[at..];
+        if (line[start] == '>' and (start + 1 == line.len or line[start + 1] == ' ')) {
+            at = @min(start + 2, line.len);
+            continue;
+        }
+        if ((line[start] == '-' or line[start] == '*' or line[start] == '+') and
+            start + 1 < line.len and line[start + 1] == ' ')
+        {
+            at = start + 2;
+            continue;
+        }
+        var end = start;
+        while (end < line.len and std.ascii.isDigit(line[end]) and end - start < 9) : (end += 1) {}
+        if (end > start and end + 1 < line.len and
+            (line[end] == '.' or line[end] == ')') and line[end + 1] == ' ')
+        {
+            at = end + 2;
+            continue;
+        }
+        return line[at..];
+    }
+}
+
+test "ghosttex math excludes fenced code in Markdown containers" {
+    const source = "> ```tex\n> \\(hidden\\)\n> ```\n- ~~~\n  \\(hidden\\)\n  ~~~\n1. ```\n   \\(hidden\\)\n   ```\n\\(visible\\)";
+    var iterator: Iterator = .init(source, .{});
+    try std.testing.expectEqualStrings("visible", iterator.next().?.body.slice(source));
+    try std.testing.expect(iterator.next() == null);
 }
 
 test "ghosttex math explicit delimiters and source ranges" {
@@ -313,4 +382,29 @@ test "ghosttex math empty bodies and backslash before hard newline" {
     var it: Iterator = .init(source, .{});
     try std.testing.expectEqualStrings("ok", it.next().?.body.slice(source));
     try std.testing.expect(it.next() == null);
+}
+
+test "ghosttex math checkpoint carries code context between snapshots" {
+    const source = "```tex\n\\(hidden\\)\n```\n\\(visible\\)";
+    var checkpoints: [8]Checkpoint = undefined;
+    var iterator: Iterator = .init(source, .{});
+    iterator.checkpoints = &checkpoints;
+    try std.testing.expectEqualStrings("visible", iterator.next().?.body.slice(source));
+    try std.testing.expect(iterator.next() == null);
+    try std.testing.expect(iterator.checkpoint_count >= 4);
+    var resumed: Iterator = .init(source[checkpoints[1].offset..], .{});
+    checkpoints[1].restore(&resumed);
+    try std.testing.expectEqualStrings("visible", resumed.next().?.body.slice(resumed.source));
+    try std.testing.expect(resumed.next() == null);
+}
+
+test "ghosttex math marked messages stop unfinished code and formulas" {
+    const first = "```unclosed\n\\(hidden\\)\n";
+    const source = first ++ "\\(visible\\)\n\\[unfinished\n" ++ "\\(next\\)";
+    const second = first.len + "\\(visible\\)\n\\[unfinished\n".len;
+    var iterator: Iterator = .init(source, .{});
+    iterator.boundaries = &.{ first.len, second };
+    try std.testing.expectEqualStrings("visible", iterator.next().?.body.slice(source));
+    try std.testing.expectEqualStrings("next", iterator.next().?.body.slice(source));
+    try std.testing.expect(iterator.next() == null);
 }
