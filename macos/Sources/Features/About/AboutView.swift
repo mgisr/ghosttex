@@ -8,7 +8,7 @@ struct AboutView: View {
 
     /// Read the commit from the bundle.
     private var build: String? { Bundle.main.infoDictionary?["CFBundleVersion"] as? String }
-    private var commit: String? { Bundle.main.infoDictionary?["GhosttyCommit"] as? String }
+    private var commit: String? { Bundle.main.infoDictionary?["GhosttexCommit"] as? String }
     private var version: String? { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String }
 
     private enum VersionConfig {
@@ -31,13 +31,8 @@ struct AboutView: View {
         }
 
         var url: URL? {
-            switch self {
-            case .stable(let version):
-                let slug = version.replacingOccurrences(of: ".", with: "-")
-                return URL(string: "https://ghostty.org/docs/install/release-notes/\(slug)")
-            default:
-                return nil
-            }
+            // Ghosttex versions do not have upstream Ghostty release notes.
+            return nil
         }
     }
 
@@ -78,10 +73,10 @@ struct AboutView: View {
 
             VStack(alignment: .center, spacing: 32) {
                 VStack(alignment: .center, spacing: 8) {
-                    Text("Ghostty")
+                    Text("Ghosttex")
                         .bold()
                         .font(.title)
-                    Text("Fast, native, feature-rich terminal \nemulator pushing modern features.")
+                    Text("Native terminal with TeX formula rendering.\nBased on Ghostty.")
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .font(.caption)

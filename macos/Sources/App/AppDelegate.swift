@@ -523,7 +523,7 @@ class AppDelegate: NSObject,
                 Self.logger.warning("refusing to execute file with control characters path=\(filename.debugDescription, privacy: .public)")
                 let alert = NSAlert()
                 alert.messageText = "Cannot Execute File"
-                alert.informativeText = "This file's path contains hidden control characters, which could make Ghostty run a different command than the one shown."
+                alert.informativeText = "This file's path contains hidden control characters, which could make Ghosttex run a different command than the one shown."
                 alert.addButton(withTitle: "OK")
                 alert.alertStyle = .warning
                 alert.runModal()
@@ -552,7 +552,7 @@ class AppDelegate: NSObject,
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
             let alert = NSAlert()
-            alert.messageText = "Allow Ghostty to execute \"\(filename)\"?"
+            alert.messageText = "Allow Ghosttex to execute \"\(filename)\"?"
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Cancel")
             alert.alertStyle = .warning
@@ -1005,8 +1005,11 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func checkForUpdates(_ sender: Any?) {
-        updateController.checkForUpdates()
-        // UpdateSimulator.happyPath.simulate(with: updateViewModel)
+        let alert = NSAlert()
+        alert.messageText = "Ghosttex updates"
+        alert.informativeText = "This copy was built locally. Install a newer Ghosttex release to update."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @IBAction func newWindow(_ sender: Any?) {
@@ -1316,7 +1319,7 @@ extension AppDelegate {
                 let alert = NSAlert()
                 alert.messageText = "Failed to Set Default Terminal"
                 alert.informativeText = """
-                Ghostty could not be set as the default terminal application.
+                Ghosttex could not be set as the default terminal application.
 
                 Error: \(error.localizedDescription)
                 """
@@ -1378,7 +1381,7 @@ extension AppDelegate {
         if controllersNeedConfirmation.count == 1 {
             Task {
                 let response = await controllersNeedConfirmation[0].confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
+                    messageText: "Quit Ghosttex?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
                     confirmButtonTitle: "Terminate",
                 )
@@ -1412,7 +1415,7 @@ extension AppDelegate {
         Task {
             for controller in controllers {
                 let response = await controller.confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
+                    messageText: "Quit Ghosttex?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
                     confirmButtonTitle: "Terminate",
                 )

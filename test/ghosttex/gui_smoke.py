@@ -201,7 +201,7 @@ if __name__ == "__main__":
     parser.add_argument("--writer", action="store_true")
     parser.add_argument("--cycles", type=int, default=0, help="stress source/native cancellation and reactivation")
     parser.add_argument("--output", type=Path, default=Path(".zig-cache/ghosttex-gui"))
-    parser.add_argument("--binary", type=Path, default=Path("zig-out/bin/ghostty"))
+    parser.add_argument("--binary", type=Path, default=Path("zig-out/bin/ghosttex"))
     arguments = parser.parse_args()
     if arguments.writer:
         writer(arguments.output)

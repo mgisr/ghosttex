@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build a native-architecture test app on a Mac; never replaces an installed app.
+# Build a native-architecture release app on a Mac; never replaces an installed app.
 set -euo pipefail
 
 if [[ "$(uname -s)" != Darwin ]]; then
@@ -42,18 +42,20 @@ stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/ghosttex-macos.XXXXXX")"
 trap 'rm -rf "$stage_dir"' EXIT
 # The Rust library is built for this Mac. A universal XCFramework would also
 # need a separate Rust build for the other architecture.
-zig build -Doptimize=ReleaseSafe -Dmath=true -Dxcframework-target=native \
+zig build -Doptimize=ReleaseFast -Dversion-string=0.1.1 -Dmath=true -Dxcframework-target=native \
   -Demit-macos-app=true -Demit-xcframework=true -Demit-docs=false \
   --prefix "$stage_dir/install"
 
-cp -R "$stage_dir/install/Ghostty.app" "$app_path"
+cp -R "$stage_dir/install/Ghosttex.app" "$app_path"
 cp "$stage_dir/install/bin/ghosttex-math-worker" "$app_path/Contents/MacOS/"
 mkdir -p "$app_path/Contents/Resources/ghosttex-licenses"
 cp "$stage_dir/install/share/ghosttex/licenses/"* "$app_path/Contents/Resources/ghosttex-licenses/"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 0.1.1' "$app_path/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :GhosttexBuild ReleaseFast' "$app_path/Contents/Info.plist"
 codesign --force --sign - --timestamp=none "$app_path/Contents/MacOS/ghosttex-math-worker"
 codesign --force --deep --sign - --timestamp=none "$app_path"
 codesign --verify --deep --strict "$app_path"
 ditto -c -k --sequesterRsrc --keepParent "$app_path" "$zip_path"
 shasum -a 256 "$zip_path" > "$zip_path.sha256"
-printf 'Test app: %s\nArchive: %s\n' "$app_path" "$zip_path"
-printf 'Launch with math enabled:\n  "%s/Contents/MacOS/ghostty" --math-rendering=true --math-single-dollar=true\n' "$app_path"
+printf 'Release app: %s\nArchive: %s\n' "$app_path" "$zip_path"
+printf 'Launch with math enabled:\n  "%s/Contents/MacOS/ghosttex" --math-rendering=true --math-single-dollar=true\n' "$app_path"
