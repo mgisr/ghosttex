@@ -4,22 +4,22 @@
 RaTeX 原生排版，支持动态高度，同时保持输入和滚动流畅。首个验收对象为
 **Linux + Codex CLI**；macOS/Metal 在共享布局模型稳定后验证。
 
-这是一份实施约定，不代表所有能力已经实现。遇到不能证明兼容的输出区域时，
+已实现默认关闭的原生渲染原型；完整目标尚未验收完成。遇到不能证明兼容的输出区域时，
 保留源码是必要的降级行为，不能用遮挡正文的图片代替动态布局。
 
 ## 当前基线与进度
 
-| 项目           | 当前状态                                                                       |
-| -------------- | ------------------------------------------------------------------------------ |
-| Ghostty 基线   | `08a951834`，`1.3.2-dev`                                                       |
-| Zig            | 仓库要求 `0.17.0`                                                              |
-| 首轮平台       | Linux x86_64，GTK/OpenGL                                                       |
-| 首轮 CLI       | Codex CLI；真实窗口验收前记录准确版本和启动参数                                |
-| RaTeX 候选基线 | `28fa5a7c800172af00043270c0acc85bd0c60155`，工作区版本 `0.1.15`                |
-| RaTeX 依赖     | 已阅读该版本 C ABI 和 DisplayList 文档；尚未加入构建或验证命令覆盖率           |
-| 已实现         | 无分配的快照公式识别器、半开字节范围、默认保守语法与长度上限                   |
-| 已加入测试     | 真实 VT 解析后的颜色、逐字节输入、中文、软/硬换行、覆盖、清屏与视口外代码围栏  |
-| 尚未实现       | 增量失效、持久锚点、RaTeX 链接与栅格化、后台队列、动态布局、GPU 绘制与交互映射 |
+| 项目           | 当前状态                                                                               |
+| -------------- | -------------------------------------------------------------------------------------- |
+| Ghostty 基线   | `08a951834`，`1.3.2-dev`                                                               |
+| Zig            | 仓库要求 `0.17.0`                                                                      |
+| 首轮平台       | Linux x86_64，GTK/OpenGL                                                               |
+| 首轮 CLI       | Codex CLI；真实窗口验收前记录准确版本和启动参数                                        |
+| RaTeX 候选基线 | `28fa5a7c800172af00043270c0acc85bd0c60155`，工作区版本 `0.1.15`                        |
+| RaTeX 依赖     | Rust 1.90.0 + 固定提交；已接入 Zig 构建、字体、SVG 轮廓与透明 RGBA                     |
+| 已实现         | 公式识别、上下文检查点、异步队列、共享缓存、块级/行内投影、GPU 纹理与源码切换          |
+| 已加入测试     | VT 边界、原生 ABI、布局、缓存、隔离进程超时；GTK/OpenGL 窗口、输入、DSR 和固定底部区域 |
+| 尚未实现       | 逐脏行增量扫描、跨视口部分公式的连续布局、阅读锚点、复杂 TUI 适配及完整发布/性能验收   |
 
 已有的应用名称、配置目录、应用 ID、`TERM`、终端协议和 libghostty ABI 暂沿用
 Ghostty。独立安装包需要另立重命名清单，保留上游版权与许可，避免全局文本替换。
@@ -45,10 +45,10 @@ UTF-8 文本快照，输出包括分隔符的 `source` 范围、不包括分隔�
 货币文本和数学表达式，因此不能据此默认启用任意 shell 输出里的单美元识别。
 相邻公式优先写成 `\(x\)\(y\)`；`$x$$y$` 不承诺拆成两个公式。
 
-跳过顶层反引号/波浪线围栏、缩进代码和匹配长度的反引号代码段，支持转义
-反斜杠的奇偶性。未闭合代码段保守隐藏后续公式。当前是 Markdown 子集，
-**尚不支持列表、引用等容器内的代码语义**；在加入完整上下文适配之前，不能
-把它当作任意 Markdown 的自动渲染入口。
+跳过反引号/波浪线围栏、缩进代码和匹配长度的代码段，并检查列表/引用的围栏前缀。
+支持转义反斜杠的奇偶性；未闭合代码保守隐藏后续公式。它仍是 Markdown 子集，
+不是完整 CommonMark 实现。OSC 133 的输入/输出边界会重置解析上下文，
+已标记的输入内容不参与公式渲染。
 
 每个公式正文默认最多 16 KiB；超长候选保留源码。识别器只顺序扫描，不回溯，
 不为公式复制字符串。长度上限不等于整个快照或后台任务的内存上限。
@@ -65,9 +65,12 @@ UTF-8 文本快照，输出包括分隔符的 `source` 范围、不包括分隔�
 反斜杠、美元符号或原始换行。未保留分隔符的 Codex 输出需要经过实测后选择
 标记接口或降级，不能靠猜测补回 TeX。
 
-目前的快照扫描适用于测试和原型。正式自动识别需要脏区域和硬换行处的解析
-检查点；围栏、代码段和未闭合公式状态要随检查点保存。上下文不完整时显示源码。
-不能只扫描当前视口，也不能每一帧、每个 token 重扫全部历史。
+原型在终端内容变化时重建有界快照，并保存硬换行处的代码上下文检查点。
+最多向上捕获 128 行、快照 256 KiB、每 surface 保存 4096 个上下文检查点。
+围栏已离开视口时仍可继承上下文；上下文无法证明正确时保留源码。
+它不在每一帧或每个 token 上扫描全部历史，但尚未完成逐脏行的增量提取。
+已加入跨视口块公式的纹理裁剪原型，按可见源码行比例裁剪，复用完整公式缓存；
+跨视口行内公式仍回退源码。这还不是连续的视觉滚动布局，缓存滚动验收仍未完成。
 
 ## 架构约定
 
@@ -109,42 +112,52 @@ Codex 版本上验证可识别的正文区域，必要时使用可选标记或�
 
 ### RaTeX、字体与原生绘制
 
-先固定上述 RaTeX 提交，选择稳定 Rust 工具链并记录 MSRV、目标三元组和链接
-依赖，之后才纳入 Zig 构建。Rust 缓冲区用 Rust 导出函数释放；错误信息在调用
-线程内复制。不能将线程局部 `ratex_get_last_error` 指针跨线程留存。
+已固定 RaTeX 提交和 Rust 1.90.0。`-Dmath=true` 构建静态桥接库及独立
+`ghosttex-math-worker`；关闭该构建选项不需要 Rust。当前只接受本机 Linux/macOS
+目标，禁止把本机 Rust 库误用于另一架构。macOS 的实际构建和窗口尚未验证。
 
-现有 C ABI 返回 DisplayList JSON，不返回 RGBA。JSON 需要限制字节数、项目数、
-协议版本、数值范围及总尺寸；忽略未知字段，遇到无法绘制的指令则整式回退，
-避免展示残缺公式。需另接 RaTeX 栅格化器或编写明确的栅格化桥接。
+桥接使用自有的 C ABI 1，见 `native/ghosttex-math/ghosttex_math.h`。
+Rust 缓冲区仅由配套 free 函数释放，错误信息存放在独立结果中。
+Zig 不跨语言解码 DisplayList JSON：解析、类型化布局、字体轮廓转换均留在 Rust；
+生产路径返回经检查的 RGBA、尺寸和基线。
+
+RaTeX 原有 C ABI 返回 DisplayList JSON，不返回 RGBA。原型通过 RaTeX 的嵌入字体
+与 SVG 轮廓输出，再由 resvg 栅格化。未找到字体轮廓、超过尺寸预算或不能解析时，
+整式回退源码；没有 PNG 编解码、终端图片协议或外部 TeX 进程。
+数学字体及 Rust 依赖的许可记录随构建安装到 `share/ghosttex/licenses/`。
 
 宽度、ascent `height` 和 descent `depth` 单位均为 em；总像素高度为
 `(height + depth) × font_px`，基线为 `height × font_px`。DisplayList 的
 `GlyphPath` 不自带字形轮廓，宿主须提供匹配的数学字体资源。中文/Unicode
 回退需同时提供匹配的字体度量，字体缺失保留源码。
 
-首版评估后台产生透明 RGBA，直接上传纹理。明确行跨度、颜色空间、透明度及
-预乘约定后，再复用 `src/renderer/image.zig` 的上传/裁剪/释放机制；公式不
-伪装成 PTY 发来的 Kitty 图片。OpenGL 先验收，Metal 单独验证相同混合语义。
+后台返回紧密排列、straight alpha、sRGB RGBA8，复用图片模块上传/裁剪/释放，
+使用独立 math 图片 ID 命名空间。来源字形缓冲区始终保留；上传失败即回退完整源码视图。
+共享绘制路径覆盖 OpenGL/Metal，当前只验证了 GTK/OpenGL 软件渲染窗口。
 
 ### 调度、缓存与限额
 
-正式原型的初始预算如下，均为待实现、待压测的设计值：
+当前原型的限额如下；峰值与长期稳定性仍需验收：
 
 | 资源                    | 初始限制                                                  |
 | ----------------------- | --------------------------------------------------------- |
-| 公式正文                | 16 KiB；解析嵌套深度 64                                   |
-| 后台队列 / 并发         | 32 个去重请求 / 1 个工作线程                              |
+| 公式正文                | 16 KiB；固定 RaTeX 版本的解析深度上限 32                  |
+| 后台队列 / 并发         | 32 个排队请求 / 每应用 1 个调度线程和隔离排版进程         |
 | 单张纹理                | 边长不超过 4096 px，总像素不超过 4 Mi，RGBA 不超过 16 MiB |
 | CPU 像素 / GPU 纹理缓存 | 每个应用分别 64 MiB / 128 MiB；多标签页共享总预算         |
-| 持久区域                | 每 surface 最多 512 个，优先保留可见区域                  |
+| 持久区域                | 每个视口最多 512 个公式；共享 CPU 缓存最多 512 条         |
 
 布局、CPU 像素和 GPU 纹理分层缓存。键包含源码、显示模式、RaTeX/协议版本、
 字体版本、字号、DPI、宽度约束及颜色策略；滚动位置不入键。去重不复用区域
 身份，滚动复用结果只更新位置与裁剪。初版不做磁盘缓存。
 
 可见请求优先，相同请求合并，过期请求在执行前跳过。解析失败按源码和引擎
-版本缓存；字体、宽度、GPU 失败在对应条件改变后允许重试。若无法在进程内
-可靠限制病态解析耗时，应评估隔离 worker，不能把超时标记当作真正取消。
+版本缓存；字体、宽度、GPU 失败在对应条件改变后允许重试。实际排版已放入独立 helper：
+每请求最多 2 秒；Linux 进程地址空间上限 768 MiB，macOS 暂无对应的硬内存上限，
+仍受输入、输出、队列与超时限制。超时、取消或异常退出会终止
+进程组并允许之后的请求重启。退出/关闭最后一个 context 时最多每 5 ms 检查取消，
+不等待一个已经过时的排版请求用满超时。进程预算包含字体与布局，
+不等于 64 MiB 的父进程像素缓存预算。
 
 ### 交互、配置与回退
 
@@ -153,9 +166,85 @@ Codex 版本上验证可识别的正文区域，必要时使用可选标记或�
 额外留白的点击落到公式范围，公式内部选择按原始范围处理，之后再评估局部
 TeX 选择。拖选、链接、鼠标报告、滚轮和 IME 坐标均须统一经过视觉映射。
 
-未来提供默认关闭的功能配置、按窗口/档案启用及即时切换源码入口。程序名
-自动识别只能作为提示，必须允许手动覆盖；当前没有加入不起作用的配置项。
-关闭时恢复阅读位置与选择，释放任务、锚点、缓存引用和视觉展开。
+已提供默认关闭的 `math-rendering`、可选 `math-single-dollar`、
+`math-protected-bottom-rows` 和 `toggle_math_rendering` 动作。输入/鼠标通过已呈现帧的
+逆映射回到逻辑网格，IME 使用前向位置；复制/搜索继续使用原始终端源码。
+关闭会撤销视觉投影与后台引用，CPU/GPU 资源按生命周期释放。复杂选择、
+任意位置源码切换后的阅读锚点及快速跨视口滚动仍需进一步验证。
+
+## 构建与使用原型
+
+```sh
+zig build -Dmath=true
+./zig-out/bin/ghostty --math-rendering=true
+```
+
+需要 Zig 0.17.0、rustup/Cargo、Rust 1.90.0 和原有 Ghostty GUI 依赖。第一次构建
+会按 Cargo.lock 拉取固定依赖。保持 helper 与应用可执行文件相邻。
+Unicode 使用系统字体；可在启动前用 `RATEX_UNICODE_FONT` 指定匹配的 TTF/TTC。
+
+```ini
+math-rendering = true
+math-single-dollar = false
+math-protected-bottom-rows = 0
+keybind = ctrl+shift+m=toggle_math_rendering
+```
+
+保护行数为 0 时，普通输入随正文流动；已知固定输入区的 CLI 可显式配置保护行数。
+这不是对任意全屏 CLI 输入区的自动检测。
+
+### macOS 本机测试构建
+
+需要 Xcode 26+、macOS 26 SDK、Metal Toolchain、Zig 0.17.0 和 Rust 1.90.0。
+在 Apple Silicon 或 Intel Mac 上按本机架构构建：
+
+```sh
+rustup toolchain install 1.90.0 --profile minimal
+bash scripts/build-macos.sh
+```
+
+脚本使用 `-Dxcframework-target=native`，避免将本机 Rust 库链接进另一架构。
+输出在 `dist/ghosttex-macos-$(uname -m)/`：`Ghosttex.app`、ZIP 与 SHA-256。
+helper 放在 `Contents/MacOS/`，依赖许可放在 Resources 中；只做本地 ad hoc
+签名，没有 Developer ID 签名或公证。不会覆盖已安装的 Ghostty 或修改用户配置，
+应用 ID、配置目录和界面名称仍沿用 Ghostty。此路径尚未经 macOS 实际编译或窗口验收。
+
+```sh
+"dist/ghosttex-macos-$(uname -m)/Ghosttex.app/Contents/MacOS/ghostty" \
+  --math-rendering=true --math-single-dollar=true
+```
+
+再次构建可用 `bash scripts/build-macos.sh /path/to/new-output` 指定新输出目录；
+已有的 app 或 ZIP 不会被覆盖。
+
+### Codex 的版本/配置差异
+
+已验证 Linux Codex CLI 0.163.0 默认会把部分 TeX 转成 Unicode 字符。
+源码入口是 `markdown_render/math.rs`；`tui.rendering.math` 默认开启，支持：
+
+```sh
+codex -c tui.rendering.math=false
+```
+
+它不是 Linux 专属代码。用户提供的 macOS 环境仍保留 TeX，支持直接缓冲区接入；
+尚未取得该环境的版本与窗口验收数据，不能把本机行为外推为 macOS 的结论。
+
+关闭 Codex 公式转换后，代码区的 Markdown 标记仍可能被其 TUI 移除。因此
+Linux 0.163.0 的已知 TUI 输出默认保守回退，避免把代码里的 TeX 渲染成公式。
+该保护仅针对已验证的 Linux 版本；其他环境需要单独核实源码与代码语义是否保留。
+
+可选适配器通过 Codex 官方 `exec --json` 接口输出原始 Markdown，保留代码围栏，
+使用 OSC 133 标记输入/输出，并在后续提示中 resume session：
+
+```sh
+./zig-out/bin/ghostty --math-rendering=true --math-raw-output=true \
+  -e python3 scripts/ghosttex-codex.py
+```
+
+这是普通行编辑输入界面，不替换原版 Codex TUI 的全部功能；按完成的 agent 消息输出，
+不提供 token 级预览。`--` 后可传 Codex 参数，认证、模型、沙箱和审批沿用 Codex 设置。
+适配器不会编辑用户全局配置，也不会把模型输出的终端控制字符直接执行。
+`math-raw-output` 仅用于用户确认保留原始 Markdown 的输出源，不会恢复已丢失的内容。
 
 ## 实施阶段与完成条件
 
@@ -197,6 +286,9 @@ p95 ≤ 16.7 ms、p99 ≤ 33.3 ms；无公式输出相对关闭功能的 p95 回
 ```sh
 zig test src/terminal/markdown_math.zig
 zig build test-lib-vt -Dtest-filter='ghosttex math'
+zig build test -Dmath=true -Dtest-filter=ghosttex
+cargo test --locked --manifest-path native/ghosttex-math/Cargo.toml
+python3 test/ghosttex/adapter_test.py
 ```
 
 云环境提供的工具链未在默认 PATH 时，先执行：
@@ -205,9 +297,14 @@ zig build test-lib-vt -Dtest-filter='ghosttex math'
 . /workspace/ghosttex-env/activate.sh
 ```
 
-当前测试在 CPU 上验证识别和真实终端状态，不验证 RaTeX、窗口动态高度或
-滚动帧率。Xvfb/软件 OpenGL 只适合启动与正确性冒烟，性能验收需要真实 GPU
-和真实 Ghostty 窗口。后续补齐 SSH、tmux、分屏、主/备用屏幕和 Metal 平台矩阵。
+当前已验证 RaTeX 样例、ABI 所有权、隔离进程超时、原生布局及窗口正确性。
+GUI 回归：`dbus-run-session -- xvfb-run -a python3 test/ghosttex/gui_smoke.py`。
+`--codex`、`--codex-source` 和 `--codex-adapter` 使用本地 Responses API 固定响应，
+测试真实 Codex CLI，无需账号或外部模型调用。中文窗口样例需要可用的系统中文字体。
+
+Xvfb/软件 OpenGL 结果不代表真实 GPU 帧率。当前环境没有 `/dev/dri`，也没有
+macOS SDK/Metal 运行环境。硬件性能、macOS 窗口、一小时长会话、SSH/tmux/分屏
+以及完整发布身份仍未验收，不能将原型标记为全部目标完成。
 
 ## 参考
 

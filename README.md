@@ -1,8 +1,10 @@
 > **Ghosttex** is a Ghostty fork exploring native Markdown math rendering with
 > RaTeX. The initial validation target is Linux + Codex CLI. See
 > [the Ghosttex scope and implementation plan](GHOSTTEX.md) for supported syntax,
-> architecture, milestones, and acceptance criteria. Native math rendering is
-> not available yet; the Ghostty documentation below describes the upstream base.
+> architecture, milestones, and acceptance criteria. An experimental native math
+> renderer is available with `zig build -Dmath=true` and `math-rendering = true`.
+> Release validation is still in progress. The documentation below describes
+> the upstream Ghostty base.
 
 <!-- LOGO -->
 <h1>
