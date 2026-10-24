@@ -144,69 +144,14 @@ def run(args):
                "--shell-integration=none", "--window-width=96", "--window-height=32", "--font-size=14",
                "--window-padding-x=0", "--window-padding-y=0", "--gtk-titlebar=false", "--window-decoration=false",
                "--title=Ghosttex Math Smoke", "--cursor-style-blink=false", "--math-rendering=true",
-               "--math-single-dollar=true", "--math-protected-bottom-rows=3",
+               "--math-single-dollar=true",
                "--keybind=ctrl+shift+m=toggle_math_rendering", "--keybind=ctrl+shift+o=write_screen_file:copy,vt"]
-    server = None
-    if args.codex or args.codex_source or args.codex_adapter:
-        from codex_fixture import Handler, ThreadingHTTPServer, arguments
-        import threading
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        if args.codex_adapter:
-            command += ["--math-raw-output=true", "-e", sys.executable,
-                        str(Path("scripts/ghosttex-codex.py").resolve()), "--prompt", "Emit the math fixture without tools.",
-                        "--", "--skip-git-repo-check", "--ephemeral"]
-            command += arguments(server.server_port)
-        else:
-            command += ["-e", "codex", "--no-alt-screen", "-s", "read-only", "-a", "never"]
-            command += arguments(server.server_port)
-            if args.codex_source:
-                command += ["-c", "tui.rendering.math=false"]
-            command += ["-c", f'projects."{Path.cwd()}".trust_level="trusted"', "Emit the math fixture without tools."]
-    else:
-        command += ["-e", sys.executable, str(Path(__file__).resolve()), "--writer", "--output", str(output)]
+    command += ["-e", sys.executable, str(Path(__file__).resolve()), "--writer", "--output", str(output)]
     log_path = output / "window.log"
     with log_path.open("w") as log:
         process = subprocess.Popen(command, stdout=log, stderr=log, env=environment)
         keyboard = None
         try:
-            if args.codex or args.codex_source or args.codex_adapter:
-                keyboard = Keyboard()
-                # A PTY terminal handles Codex's DSR startup query itself.
-                # Some releases still show a one-time local trust screen.
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline and not getattr(server, "requests", 0):
-                    keyboard.type("Return")
-                    time.sleep(0.5)
-                assert getattr(server, "requests", 0), "Codex did not reach the local fixture provider"
-                if args.codex_adapter:
-                    wait_for(lambda: any(int(n) >= 4 for n in re.findall(r"math frame ready=(\d+)", log_path.read_text())), process)
-                time.sleep(1)
-                keyboard.control("o", shift=True)
-                clip = subprocess.run(["/usr/bin/python3", "-c", CLIPBOARD_READER], capture_output=True, text=True, env=environment, timeout=5)
-                source_path = Path(clip.stdout.strip())
-                assert source_path.is_file(), (clip.stdout, clip.stderr)
-                captured = source_path.read_bytes()
-                (output / "codex-screen.vt").write_bytes(captured)
-                source_path.unlink()
-                text = log_path.read_text()
-                if args.codex or args.codex_source:
-                    assert "formatted Codex output requires a raw Markdown adapter" in text
-                    assert not re.search(r"math frame ready=[1-9]", text), "formatted CLI code was rendered as math"
-                if args.codex_source:
-                    assert b"\\(x_1^2 + \\sqrt{y}\\)" in captured
-                    assert b"\\frac{a+b}{c+d}" in captured
-                subprocess.run(["import", "-window", str(keyboard.focus()), str(output / "codex.png")], check=True)
-                if args.codex_adapter:
-                    for key in ("slash", "q", "u", "i", "t", "Return"):
-                        keyboard.type(key)
-                else:
-                    keyboard.control("c")
-                    time.sleep(0.1)
-                    keyboard.control("c")
-                process.wait(timeout=10)
-                print("Real Codex interactive fixture captured:", output)
-                return
             wait_for(lambda: (output / "dsr.txt").exists(), process)
             expected = 6 if environment.get("RATEX_UNICODE_FONT") else 5
             wait_for(lambda: any(int(n) >= expected for n in re.findall(r"math frame ready=(\d+)", log_path.read_text())), process)
@@ -249,33 +194,11 @@ def run(args):
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)
-            if server:
-                server.shutdown()
-                server.server_close()
-
-
-CLIPBOARD_READER = """
-import gi
-gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk, Gdk, GLib
-Gtk.init()
-clipboard = Gdk.Display.get_default().get_clipboard()
-loop = GLib.MainLoop()
-def ready(source, result):
-    print(source.read_text_finish(result) or '', flush=True)
-    loop.quit()
-clipboard.read_text_async(None, ready)
-GLib.timeout_add_seconds(3, loop.quit)
-loop.run()
-"""
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writer", action="store_true")
-    parser.add_argument("--codex", action="store_true", help="capture the actual interactive Codex CLI with the local provider")
-    parser.add_argument("--codex-source", action="store_true", help="verify tui.rendering.math=false preserves TeX")
-    parser.add_argument("--codex-adapter", action="store_true", help="validate raw Codex messages through the adapter")
     parser.add_argument("--cycles", type=int, default=0, help="stress source/native cancellation and reactivation")
     parser.add_argument("--output", type=Path, default=Path(".zig-cache/ghosttex-gui"))
     parser.add_argument("--binary", type=Path, default=Path("zig-out/bin/ghostty"))

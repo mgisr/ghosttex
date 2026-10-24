@@ -853,7 +853,6 @@ pub fn deinit(self: *Surface) void {
     // stops the display link for good.
     self.renderer.deinit();
     self.renderer_thread.deinit();
-    self.renderer_state.math.deinit(self.alloc);
     self.io_thread.deinit();
     self.mouse.selection_gesture.deinit(&self.io.terminal);
     self.io.deinit();
@@ -872,6 +871,7 @@ pub fn deinit(self: *Surface) void {
     self.app.font_grid_set.deref(self.font_grid_key);
 
     // Clean up our render state
+    self.renderer_state.math_viewport.deinit(self.alloc);
     if (self.renderer_state.preedit) |p| self.alloc.free(p.codepoints);
     self.alloc.destroy(self.renderer_state.mutex);
     self.config.deinit();
@@ -2225,19 +2225,16 @@ pub fn imePointScaled(self: *const Surface, scale: apprt.ContentScale) apprt.IME
     const cursor = self.renderer_state.terminal.screens.active.cursor;
     const preedit_width: usize = if (self.renderer_state.preedit) |preedit| preedit.width() else 0;
     self.renderer_state.mutex.unlock(global.io());
+    const visual_cursor = @constCast(&self.renderer_state.math_viewport).position(global.io(), cursor.x, cursor.y);
 
     // TODO: need to handle when scrolling and the cursor is not
     // in the visible portion of the screen.
 
     // Our sizes are all scaled so we need to send the unscaled values back.
 
-    const visual = @constCast(&self.renderer_state.math).position(global.io(), cursor.x, cursor.y);
-    const visual_x: u32 = if (visual) |p| p.x else cursor.x;
-    const visual_y: u32 = if (visual) |p| @intCast(@max(p.y, 0)) else cursor.y;
-    const shift: u32 = if (visual) |p| @intCast(@max(p.baseline_shift, 0)) else 0;
     const x: f64 = x: {
         // Simple x * cell width gives the top-left corner, then add padding offset
-        var x: f64 = @floatFromInt(visual_x * self.size.cell.width + self.size.padding.left);
+        var x: f64 = @floatFromInt(visual_cursor.x * self.size.cell.width + self.size.padding.left);
 
         // We want the midpoint
         x += @as(f64, @floatFromInt(self.size.cell.width)) / 2;
@@ -2250,7 +2247,7 @@ pub fn imePointScaled(self: *const Surface, scale: apprt.ContentScale) apprt.IME
 
     const y: f64 = y: {
         // Simple y * cell height gives the top-left corner, then add padding offset
-        var y: f64 = @floatFromInt(visual_y * self.size.cell.height + self.size.padding.top + shift);
+        var y: f64 = @floatFromInt(visual_cursor.y * self.size.cell.height + self.size.padding.top);
 
         // We want the bottom
         y += @floatFromInt(self.size.cell.height);
@@ -2978,7 +2975,10 @@ pub fn keyCallback(
             try self.setSelection(null);
         }
 
-        if (self.config.scroll_to_bottom.keystroke) self.io.terminal.scrollViewport(.bottom);
+        if (self.config.scroll_to_bottom.keystroke) {
+            self.renderer_state.math_viewport.followBottom(global.io());
+            self.io.terminal.scrollViewport(.bottom);
+        }
 
         try self.queueRender();
     }
@@ -3601,7 +3601,7 @@ pub fn scrollCallback(
     // Always show the mouse again if it is hidden
     if (self.mouse.hidden) self.showMouse();
 
-    const y: ScrollAmount = if (yoff == 0) .{} else y: {
+    var y: ScrollAmount = if (yoff == 0) .{} else y: {
         // We use cell_size to determine if we have accumulated enough to trigger a scroll
         const cell_size: f64 = @floatFromInt(self.size.cell.height);
 
@@ -3693,6 +3693,17 @@ pub fn scrollCallback(
             try self.setSelection(null);
         }
 
+        if (y.delta != 0) {
+            const alternate_scroll = self.io.terminal.screens.active_key == .alternate and
+                self.io.terminal.flags.mouse_event == .none and self.io.terminal.modes.get(.mouse_alternate_scroll);
+            const owner: @import("math/Viewport.zig").WheelOwner = if (self.isMouseReporting() or alternate_scroll) .application else .terminal;
+            const pos = try self.rt_surface.getCursorPos();
+            const native = (rendererpkg.Coordinate{ .surface = .{ .x = pos.x, .y = pos.y } }).convert(.grid, self.size).grid;
+            const remaining = self.renderer_state.math_viewport.wheel(global.io(), y.delta, native.y, owner);
+            if (remaining != y.delta) try self.queueRender();
+            y.delta = remaining;
+        }
+
         // If we're in alternate screen with alternate scroll enabled, then
         // we convert to cursor keys. This only happens if we're:
         // (1) alt screen (2) no explicit mouse reporting and (3) alt
@@ -3758,11 +3769,7 @@ pub fn scrollCallback(
             // Modify our viewport, this requires a lock since it affects
             // rendering. We have to switch signs here because our delta
             // is negative down but our viewport is positive down.
-            const remainder = self.renderer_state.math.wheel(global.io(), y.delta);
-            if (remainder != 0) {
-                self.renderer_state.math.resetScroll(global.io());
-                self.io.terminal.scrollViewport(.{ .delta = remainder * -1 });
-            }
+            self.io.terminal.scrollViewport(.{ .delta = y.delta * -1 });
         }
     }
 
@@ -4902,16 +4909,24 @@ pub fn posToViewport(self: *const Surface, xpos: f64, ypos: f64) terminal.point.
     // Get our grid cell
     const coord: rendererpkg.Coordinate = .{ .surface = .{ .x = xpos, .y = ypos } };
     const grid = coord.convert(.grid, self.size).grid;
-    const point = @constCast(&self.renderer_state.math).hit(global.io(), grid.x, grid.y);
-    return .{ .x = point.x, .y = point.y };
+    const logical = @constCast(&self.renderer_state.math_viewport).hit(global.io(), grid.x, grid.y);
+    return .{ .x = logical.x, .y = logical.y };
 }
 
 /// Scroll to the bottom of the viewport.
 ///
 /// Precondition: the render_state mutex must be held.
 fn scrollToBottom(self: *Surface) !void {
+    self.renderer_state.math_viewport.followBottom(global.io());
     self.io.terminal.scrollViewport(.{ .bottom = {} });
     try self.queueRender();
+}
+
+/// Native scroll direction is positive down; visual wheel direction is up.
+fn scrollVisual(self: *Surface, delta: isize) !isize {
+    const remaining = -self.renderer_state.math_viewport.scrollBy(global.io(), -delta);
+    if (remaining != delta) try self.queueRender();
+    return remaining;
 }
 
 fn hideMouse(self: *Surface) void {
@@ -4984,8 +4999,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
 
     switch (action.scoped(.surface).?) {
         .toggle_math_rendering => {
-            self.renderer_state.math.disabled.store(!self.renderer_state.math.disabled.load(.monotonic), .monotonic);
-            self.renderer_state.math.resetScroll(global.io());
+            self.renderer_state.math_disabled.store(!self.renderer_state.math_disabled.load(.monotonic), .monotonic);
             try self.queueRender();
         },
         .csi, .esc => |data| {
@@ -5379,12 +5393,14 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         },
 
         .scroll_to_top => {
+            self.renderer_state.math_viewport.followTop(global.io());
             self.queueIo(.{
                 .scroll_viewport = .{ .top = {} },
             }, .unlocked);
         },
 
         .scroll_to_bottom => {
+            self.renderer_state.math_viewport.followBottom(global.io());
             self.queueIo(.{
                 .scroll_viewport = .{ .bottom = {} },
             }, .unlocked);
@@ -5416,14 +5432,14 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         .scroll_page_up => {
             const rows: isize = @intCast(self.size.grid().rows);
             self.queueIo(.{
-                .scroll_viewport = .{ .delta = -1 * rows },
+                .scroll_viewport = .{ .delta = try self.scrollVisual(-rows) },
             }, .unlocked);
         },
 
         .scroll_page_down => {
             const rows: isize = @intCast(self.size.grid().rows);
             self.queueIo(.{
-                .scroll_viewport = .{ .delta = rows },
+                .scroll_viewport = .{ .delta = try self.scrollVisual(rows) },
             }, .unlocked);
         },
 
@@ -5431,13 +5447,13 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             const rows: f32 = @floatFromInt(self.size.grid().rows);
             const delta: isize = @intFromFloat(@trunc(fraction * rows));
             self.queueIo(.{
-                .scroll_viewport = .{ .delta = delta },
+                .scroll_viewport = .{ .delta = try self.scrollVisual(delta) },
             }, .unlocked);
         },
 
         .scroll_page_lines => |lines| {
             self.queueIo(.{
-                .scroll_viewport = .{ .delta = lines },
+                .scroll_viewport = .{ .delta = try self.scrollVisual(lines) },
             }, .unlocked);
         },
 

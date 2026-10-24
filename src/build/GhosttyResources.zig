@@ -26,6 +26,10 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     });
 
     deps.help_strings.addImport(build_data_exe);
+    // Config defaults are reflected by completion/syntax generators too.
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "math", cfg.math);
+    build_data_exe.root_module.addOptions("build_options", build_options);
 
     // Terminfo
     terminfo: {

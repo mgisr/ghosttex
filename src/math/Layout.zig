@@ -1,27 +1,23 @@
-//! Visual projection over an unchanged logical grid. Visual space is quantized
-//! to terminal columns and whole rows; baselines retain pixel precision.
+//! Immutable VT cells with optional program-independent visual flow. The
+//! conservative image-fit path remains available for clipped/unknown contexts.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+pub const Flow = @import("Flow.zig");
 
-pub const Point = struct { x: u16, y: u16 };
-pub const Position = struct {
-    x: u16,
-    y: i32,
-    rows: u16,
-    baseline_shift: i16 = 0,
-    formula: bool = false,
-};
-pub const Row = struct { used: u16, wrap: bool };
 pub const Region = struct {
     first: usize,
     last: usize,
     image_id: u64,
     width: u32,
     height: u32,
-    baseline: f32,
-    display: bool,
-    source_y: u32 = 0,
-    clipped_bottom: bool = false,
+    left: u16,
+    right: u16,
+    top: i32,
+    source_rows: u32,
+    display: bool = true,
+    flow_allowed: bool = true,
+    clip_first: u16 = 0,
+    clip_end: ?u16 = null,
 };
 pub const Placement = struct {
     image_id: u64,
@@ -29,258 +25,219 @@ pub const Placement = struct {
     y: i32,
     width: u32,
     height: u32,
+    source_width: u32,
+    source_height: u32,
+    clip_top: i32,
+    clip_bottom: i32,
     first: usize,
     last: usize,
-    source_y: u32 = 0,
 };
 pub const Input = struct {
     columns: u16,
-    rows: []const Row,
-    /// Per-cell widths: spacer=0, ordinary=1, wide=2.
-    widths: []const u2,
+    rows: u16,
     regions: []const Region,
     cell_width: u32,
     cell_height: u32,
-    cell_baseline: u32,
-    /// Exclusive end of the reflowable body. Everything below stays fixed.
-    body_end: u16,
-    /// null follows the bottom. An explicit offset is clamped to the body.
-    scroll: ?u32 = null,
+    flow: ?Flow.Input = null,
 };
-
 pub const Projection = struct {
-    logical: std.ArrayList(?Position) = .empty,
-    inverse: std.ArrayList(Point) = .empty,
+    formula_cells: std.ArrayList(bool) = .empty,
     placements: std.ArrayList(Placement) = .empty,
     columns: u16 = 0,
     rows: u16 = 0,
-    body_end: u16 = 0,
-    excess: u32 = 0,
-    scroll: u32 = 0,
     active: bool = false,
+    flow_active: bool = false,
+    flow: Flow.Result = .{},
+    flow_formulas: std.ArrayList(Flow.Formula) = .empty,
+    flow_regions: std.ArrayList(usize) = .empty,
+    flow_first: u16 = 0,
+    flow_end: u16 = 0,
+    cell_width: u32 = 0,
+    cell_height: u32 = 0,
 
     pub fn deinit(self: *Projection, alloc: Allocator) void {
-        self.logical.deinit(alloc);
-        self.inverse.deinit(alloc);
+        self.formula_cells.deinit(alloc);
         self.placements.deinit(alloc);
-    }
-
-    pub fn hit(self: *const Projection, x: u16, y: u16) Point {
-        if (!self.active or x >= self.columns or y >= self.rows) return .{ .x = x, .y = y };
-        return self.inverse.items[@as(usize, y) * self.columns + x];
+        self.flow.deinit(alloc);
+        self.flow_formulas.deinit(alloc);
+        self.flow_regions.deinit(alloc);
     }
 
     pub fn build(self: *Projection, alloc: Allocator, input: Input) !void {
         self.active = false;
+        self.flow_active = false;
         self.columns = input.columns;
-        self.rows = @intCast(input.rows.len);
-        self.body_end = input.body_end;
+        self.rows = input.rows;
+        self.cell_width = input.cell_width;
+        self.cell_height = input.cell_height;
         self.placements.clearRetainingCapacity();
-        if (input.columns == 0 or input.cell_width == 0 or input.cell_height == 0 or
-            input.cell_baseline > input.cell_height or input.body_end > input.rows.len or
-            input.widths.len != input.rows.len * input.columns)
-            return error.InvalidGrid;
-        const count = input.rows.len * input.columns;
-        try self.logical.resize(alloc, count);
-        try self.inverse.resize(alloc, count);
-        @memset(self.logical.items, null);
-        for (self.inverse.items, 0..) |*p, index| p.* = point(index, input.columns);
-        if (input.regions.len == 0 or input.body_end == 0) return;
-        var last_end: ?usize = null;
+        if (input.columns == 0 or input.rows == 0 or input.cell_width == 0 or input.cell_height == 0 or
+            input.cell_width > 4096 or input.cell_height > 4096) return error.InvalidGrid;
+        const count = @as(usize, input.rows) * input.columns;
+        try self.formula_cells.resize(alloc, count);
+        @memset(self.formula_cells.items, false);
+        var last: ?usize = null;
         for (input.regions) |region| {
-            if (region.first > region.last or region.last >= @as(usize, input.body_end) * input.columns or
-                region.width == 0 or region.height == 0 or region.height > 4096 or
-                region.width > @as(u32, input.columns) * input.cell_width or
-                !std.math.isFinite(region.baseline) or region.baseline < 0 or
-                region.baseline > @as(f32, @floatFromInt(region.height)) or
-                (last_end != null and region.first <= last_end.?)) return error.InvalidRegion;
-            last_end = region.last;
+            if (region.first > region.last or region.last >= count or
+                (last != null and region.first <= last.?) or
+                region.left >= region.right or region.right > input.columns or
+                region.source_rows == 0 or region.source_rows > 65535 or @abs(@as(i64, region.top)) > 65535 or
+                region.clip_first > (region.clip_end orelse input.rows) or (region.clip_end orelse input.rows) > input.rows or
+                region.width == 0 or region.height == 0 or region.width > 4096 or region.height > 4096)
+                return error.InvalidRegion;
+            last = region.last;
+            const box_width = @as(u32, region.right - region.left) * input.cell_width;
+            const box_height = region.source_rows * input.cell_height;
+            const scale = @min(@as(f64, 1), @min(
+                @as(f64, @floatFromInt(box_width)) / @as(f64, @floatFromInt(region.width)),
+                @as(f64, @floatFromInt(box_height)) / @as(f64, @floatFromInt(region.height)),
+            ));
+            const width: u32 = @max(1, @as(u32, @intFromFloat(@floor(@as(f64, @floatFromInt(region.width)) * scale))));
+            const height: u32 = @max(1, @as(u32, @intFromFloat(@floor(@as(f64, @floatFromInt(region.height)) * scale))));
+            try self.placements.append(alloc, .{
+                .image_id = region.image_id,
+                .x = @intCast(@as(u32, region.left) * input.cell_width + if (region.display) (box_width - width) / 2 else 0),
+                .y = region.top * @as(i32, @intCast(input.cell_height)) + @as(i32, @intCast(if (region.display) (box_height - height) / 2 else box_height - height)),
+                .width = width,
+                .height = height,
+                .source_width = region.width,
+                .source_height = region.height,
+                .clip_top = @intCast(@as(u32, region.clip_first) * input.cell_height),
+                .clip_bottom = @intCast(@as(u32, region.clip_end orelse input.rows) * input.cell_height),
+                .first = region.first,
+                .last = region.last,
+            });
+            @memset(self.formula_cells.items[region.first .. region.last + 1], true);
         }
-        var builder: Builder = .{ .projection = self, .input = input, .alloc = alloc };
-        defer builder.tokens.deinit(alloc);
-        var index: usize = 0;
-        var region_index: usize = 0;
-        var suppress_break = false;
-        var content_end: usize = input.body_end;
-        while (content_end > 0 and input.rows[content_end - 1].used == 0) : (content_end -= 1) {}
-        const body_count = content_end * input.columns;
-        while (index < body_count) {
-            const y = index / input.columns;
-            const x = index % input.columns;
-            if (x >= input.rows[y].used) {
-                if (!input.rows[y].wrap) {
-                    if (!suppress_break or builder.tokens.items.len > 0) try builder.flush(true);
-                    suppress_break = false;
+        self.active = self.placements.items.len > 0;
+        if (input.flow) |native| {
+            self.flow_formulas.clearRetainingCapacity();
+            self.flow_regions.clearRetainingCapacity();
+            for (input.regions, 0..) |region, i| {
+                if (region.display or !region.flow_allowed or region.first / input.columns < native.first_row or region.last / input.columns >= native.end_row) continue;
+                try self.flow_formulas.append(alloc, .{ .first = region.first, .last = region.last, .width = region.width, .height = region.height });
+                try self.flow_regions.append(alloc, i);
+            }
+            if (self.flow_formulas.items.len == 0) return;
+            var options = native;
+            options.formulas = self.flow_formulas.items;
+            try self.flow.build(alloc, options);
+            for (self.placements.items, input.regions) |*placement, region| {
+                const row: usize = @intCast(std.math.clamp(region.top, 0, @as(i32, input.rows) - 1));
+                const offset = self.flow.offsets.items[row] * @as(i32, @intCast(input.cell_height));
+                placement.y += offset;
+                placement.clip_top += offset;
+                placement.clip_bottom += offset;
+                // A same-line display delimiter with adjacent prose is not a
+                // centered full-row block. Carry its rectangle with that prose
+                // when another inline formula reflows the shared paragraph.
+                if (region.display and (region.left != 0 or region.right != input.columns)) {
+                    const position = self.flow.positions.items[region.first];
+                    if (position.valid) {
+                        placement.x = @as(i32, position.x) * @as(i32, @intCast(input.cell_width));
+                        placement.y = (position.y + position.rows) * @as(i32, @intCast(input.cell_height)) - @as(i32, @intCast(placement.height));
+                    }
                 }
-                index = (y + 1) * input.columns;
-                continue;
-            }
-            if (region_index < input.regions.len and input.regions[region_index].first == index) {
-                const region = input.regions[region_index];
-                if (region.display and builder.tokens.items.len > 0) try builder.flush(false);
-                const width: u16 = @intCast(std.math.divCeil(u32, region.width, input.cell_width) catch unreachable);
-                try builder.append(.{ .first = index, .last = region.last, .width = width, .region = region });
-                if (region.display) {
-                    try builder.flush(false);
-                    suppress_break = true;
-                }
-                index = region.last + 1;
-                region_index += 1;
-                continue;
-            }
-            const width = input.widths[index];
-            if (width == 0) {
-                index += 1;
-                continue;
-            }
-            if (width > input.columns or x + width > input.columns) return error.InvalidGrid;
-            try builder.append(.{ .first = index, .last = index + width - 1, .width = width });
-            suppress_break = false;
-            index += width;
-        }
-        try builder.flush(false);
-        self.excess = builder.y -| input.body_end;
-        self.scroll = @min(input.scroll orelse self.excess, self.excess);
-        // Move only the body. Footer rows retain their application coordinates.
-        for (self.logical.items[0..body_count]) |*entry| if (entry.*) |*p| {
-            p.y -= @intCast(self.scroll);
-        };
-        for (self.placements.items) |*placement| placement.y -= @intCast(self.scroll * input.cell_height);
-        for (@as(usize, input.body_end) * input.columns..count) |i| {
-            const p = point(i, input.columns);
-            self.logical.items[i] = .{ .x = p.x, .y = p.y, .rows = 1 };
-        }
-        // Inverse hit rectangles include the extra height, while source still
-        // has only the original logical cells. This also covers wide text.
-        for (self.logical.items[0..body_count], 0..) |entry, i| {
-            const p = entry orelse continue;
-            if (p.formula) continue;
-            const logical = point(i, input.columns);
-            for (0..p.rows) |dy| {
-                const vy = p.y + @as(i32, @intCast(dy));
-                if (vy < 0 or vy >= input.body_end) continue;
-                self.inverse.items[@as(usize, @intCast(vy)) * input.columns + p.x] = logical;
-            }
-        }
-        for (self.placements.items) |placement| {
-            const top = @divFloor(placement.y, @as(i32, @intCast(input.cell_height)));
-            const bottom = @divFloor(placement.y + @as(i32, @intCast(placement.height)) - 1, @as(i32, @intCast(input.cell_height)));
-            const left = @divFloor(placement.x, @as(i32, @intCast(input.cell_width)));
-            const right = @divFloor(placement.x + @as(i32, @intCast(placement.width)) - 1, @as(i32, @intCast(input.cell_width)));
-            var vy = @max(0, top);
-            while (vy <= bottom and vy < input.body_end) : (vy += 1) {
-                var vx = @max(0, left);
-                while (vx <= right and vx < input.columns) : (vx += 1) {
-                    const end_half = (vy - top) * 2 > bottom - top or (vx - left) * 2 > right - left;
-                    self.inverse.items[@as(usize, @intCast(vy)) * input.columns + @as(usize, @intCast(vx))] =
-                        point(if (end_half) placement.last else placement.first, input.columns);
+                if (row >= native.first_row and row < native.end_row) {
+                    placement.clip_top = @max(placement.clip_top, @as(i32, native.first_row) * @as(i32, @intCast(input.cell_height)));
+                    placement.clip_bottom = @min(placement.clip_bottom, @as(i32, native.end_row) * @as(i32, @intCast(input.cell_height)));
                 }
             }
+            for (self.flow.images.items) |image| {
+                const placement = &self.placements.items[self.flow_regions.items[image.index]];
+                placement.x = image.x;
+                placement.y = image.y;
+                placement.width = image.width;
+                placement.height = image.height;
+                placement.clip_top = @as(i32, native.first_row) * @as(i32, @intCast(input.cell_height));
+                placement.clip_bottom = @as(i32, native.end_row) * @as(i32, @intCast(input.cell_height));
+            }
+            self.flow_active = true;
+            self.flow_first = native.first_row;
+            self.flow_end = native.end_row;
         }
-        self.active = true;
     }
 };
 
-const Token = struct { first: usize, last: usize, width: u16, region: ?Region = null };
-const Builder = struct {
-    projection: *Projection,
-    input: Input,
-    alloc: Allocator,
-    tokens: std.ArrayList(Token) = .empty,
-    x: u16 = 0,
-    y: u32 = 0,
+test "ghosttex grid layout fits formula without masking neighboring cells" {
+    const alloc = std.testing.allocator;
+    var p: Projection = .{};
+    defer p.deinit(alloc);
+    try p.build(alloc, .{ .columns = 20, .rows = 6, .cell_width = 8, .cell_height = 16, .regions = &.{.{
+        .first = 23,
+        .last = 32,
+        .left = 3,
+        .right = 13,
+        .top = 1,
+        .source_rows = 1,
+        .image_id = 1,
+        .width = 200,
+        .height = 40,
+    }} });
+    try std.testing.expect(p.active);
+    const image = p.placements.items[0];
+    try std.testing.expectEqual(@as(u32, 80), image.width);
+    try std.testing.expectEqual(@as(u32, 16), image.height);
+    try std.testing.expectEqual(@as(i32, 24), image.x);
+    try std.testing.expectEqual(@as(i32, 16), image.y);
+    for (p.formula_cells.items, 0..) |hidden, index| try std.testing.expectEqual(index >= 23 and index <= 32, hidden);
+}
 
-    fn append(self: *Builder, token: Token) !void {
-        if (@as(u32, self.x) + token.width > self.input.columns) try self.flush(false);
-        try self.tokens.append(self.alloc, token);
-        self.x += token.width;
+test "ghosttex inline math stays at source left and cell bottom with taller line spacing" {
+    const alloc = std.testing.allocator;
+    var p: Projection = .{};
+    defer p.deinit(alloc);
+    for ([_]u32{ 20, 32, 40 }) |cell_height| {
+        try p.build(alloc, .{ .columns = 40, .rows = 6, .cell_width = 8, .cell_height = cell_height, .regions = &.{.{
+            .first = 43,
+            .last = 64,
+            .left = 3,
+            .right = 25,
+            .top = 1,
+            .source_rows = 1,
+            .display = false,
+            .image_id = 1,
+            .width = 64,
+            .height = 24,
+        }} });
+        const image = p.placements.items[0];
+        try std.testing.expectEqual(@as(i32, 24), image.x);
+        try std.testing.expectEqual(@as(i32, @intCast(2 * cell_height)), image.y + @as(i32, @intCast(image.height)));
+        try std.testing.expect(image.height <= cell_height);
+        for (p.formula_cells.items, 0..) |hidden, index| try std.testing.expectEqual(index >= 43 and index <= 64, hidden);
     }
-
-    fn flush(self: *Builder, empty: bool) !void {
-        if (self.tokens.items.len == 0) {
-            if (empty) self.y += 1;
-            return;
-        }
-        const ch = self.input.cell_height;
-        const text_ascent = ch - self.input.cell_baseline;
-        var ascent: f32 = @floatFromInt(text_ascent);
-        var descent: f32 = @floatFromInt(self.input.cell_baseline);
-        for (self.tokens.items) |token| if (token.region) |region| {
-            const padding: f32 = if (region.display) @as(f32, @floatFromInt(ch)) / 2 else 0;
-            ascent = @max(ascent, region.baseline + if (region.source_y > 0) @as(f32, 0) else padding);
-            descent = @max(descent, @as(f32, @floatFromInt(region.height)) - region.baseline + if (region.clipped_bottom) @as(f32, 0) else padding);
-        };
-        const rows: u16 = @intFromFloat(@ceil((ascent + descent) / @as(f32, @floatFromInt(ch))));
-        var x: u16 = 0;
-        for (self.tokens.items) |token| {
-            if (token.region) |region| {
-                try self.projection.placements.append(self.alloc, .{
-                    .image_id = region.image_id,
-                    .x = @intCast(@as(u32, x) * self.input.cell_width),
-                    .y = @as(i32, @intCast(self.y * ch)) + @as(i32, @intFromFloat(@round(ascent - region.baseline))),
-                    .width = region.width,
-                    .height = region.height,
-                    .first = region.first,
-                    .last = region.last,
-                    .source_y = region.source_y,
-                });
-                for (token.first..token.last + 1) |i| self.projection.logical.items[i] = .{
-                    .x = x,
-                    .y = @intCast(self.y),
-                    .rows = rows,
-                    .formula = true,
-                };
-            } else {
-                for (token.first..token.last + 1, 0..) |i, dx| self.projection.logical.items[i] = .{
-                    .x = x + @as(u16, @intCast(dx)),
-                    .y = @intCast(self.y),
-                    .rows = rows,
-                    .baseline_shift = @intFromFloat(@round(ascent - @as(f32, @floatFromInt(text_ascent)))),
-                };
-            }
-            x += token.width;
-        }
-        self.y += rows;
-        self.x = 0;
-        self.tokens.clearRetainingCapacity();
-    }
-};
-
-fn point(index: usize, columns: u16) Point {
-    return .{ .x = @intCast(index % columns), .y = @intCast(index / columns) };
 }
 
-test "ghosttex layout block expands body and fixes footer" {
-    var projection: Projection = .{};
-    defer projection.deinit(std.testing.allocator);
-    const rows = [_]Row{ .{ .used = 4, .wrap = false }, .{ .used = 8, .wrap = false }, .{ .used = 4, .wrap = false }, .{ .used = 3, .wrap = false }, .{ .used = 3, .wrap = false }, .{ .used = 5, .wrap = false } };
-    try projection.build(std.testing.allocator, .{ .columns = 10, .rows = &rows, .widths = &@as([60]u2, @splat(1)), .regions = &.{.{ .first = 10, .last = 17, .image_id = 1, .width = 35, .height = 38, .baseline = 28, .display = true }}, .cell_width = 8, .cell_height = 16, .cell_baseline = 4, .body_end = 5, .scroll = 0 });
-    try std.testing.expect(projection.active);
-    try std.testing.expectEqual(@as(u32, 3), projection.excess);
-    try std.testing.expectEqual(@as(i32, 5), projection.logical.items[20].?.y);
-    try std.testing.expectEqual(@as(i32, 5), projection.logical.items[50].?.y);
-    try std.testing.expectEqual(Point{ .x = 0, .y = 1 }, projection.hit(0, 1));
-    try std.testing.expectEqual(Point{ .x = 4, .y = 5 }, projection.hit(4, 5));
-}
-
-test "ghosttex layout inline compaction baseline and inverse" {
-    var projection: Projection = .{};
-    defer projection.deinit(std.testing.allocator);
-    try projection.build(std.testing.allocator, .{ .columns = 16, .rows = &.{ .{ .used = 15, .wrap = false }, .{ .used = 0, .wrap = false }, .{ .used = 0, .wrap = false }, .{ .used = 0, .wrap = false } }, .widths = &@as([64]u2, @splat(1)), .regions = &.{.{ .first = 2, .last = 11, .image_id = 7, .width = 17, .height = 30, .baseline = 22, .display = false }}, .cell_width = 8, .cell_height = 16, .cell_baseline = 4, .body_end = 4, .scroll = 0 });
-    try std.testing.expectEqual(@as(u16, 5), projection.logical.items[12].?.x);
-    try std.testing.expectEqual(@as(i16, 10), projection.logical.items[0].?.baseline_shift);
-    try std.testing.expectEqual(Point{ .x = 12, .y = 0 }, projection.hit(5, 1));
-    try std.testing.expectEqual(Point{ .x = 2, .y = 0 }, projection.hit(2, 0));
-    try std.testing.expectEqual(Point{ .x = 11, .y = 0 }, projection.hit(4, 1));
-}
-
-test "ghosttex layout rejects overlapping regions and restores raw view" {
-    var projection: Projection = .{};
-    defer projection.deinit(std.testing.allocator);
-    var input: Input = .{ .columns = 8, .rows = &.{.{ .used = 8, .wrap = false }}, .widths = &@as([8]u2, @splat(1)), .regions = &.{ .{ .first = 0, .last = 5, .image_id = 1, .width = 8, .height = 16, .baseline = 12, .display = false }, .{ .first = 5, .last = 7, .image_id = 2, .width = 8, .height = 16, .baseline = 12, .display = false } }, .cell_width = 8, .cell_height = 16, .cell_baseline = 4, .body_end = 1 };
-    try std.testing.expectError(error.InvalidRegion, projection.build(std.testing.allocator, input));
-    try std.testing.expect(!projection.active);
+test "ghosttex grid block placement follows source rows across viewport clipping" {
+    const alloc = std.testing.allocator;
+    var p: Projection = .{};
+    defer p.deinit(alloc);
+    var region: Region = .{ .first = 0, .last = 59, .left = 0, .right = 20, .top = -1, .source_rows = 4, .image_id = 1, .width = 40, .height = 40 };
+    var input: Input = .{ .columns = 20, .rows = 6, .cell_width = 8, .cell_height = 16, .regions = &.{region} };
+    try p.build(alloc, input);
+    const old = p.placements.items[0];
+    try std.testing.expectEqual(@as(i32, 60), old.x);
+    region.top -= 1;
+    region.last -= 20;
+    input.regions = &.{region};
+    try p.build(alloc, input);
+    try std.testing.expectEqual(old.y - 16, p.placements.items[0].y);
+    try std.testing.expectEqual(old.height, p.placements.items[0].height);
     input.regions = &.{};
-    try projection.build(std.testing.allocator, input);
-    try std.testing.expectEqual(Point{ .x = 4, .y = 0 }, projection.hit(4, 0));
+    try p.build(alloc, input);
+    try std.testing.expect(!p.active);
+    for (p.formula_cells.items) |hidden| try std.testing.expect(!hidden);
+}
+
+test "ghosttex adjacent display delimiters follow dynamically reflowed prose" {
+    const a = std.testing.allocator;
+    var p: Projection = .{};
+    defer p.deinit(a);
+    try p.build(a, .{ .columns = 32, .rows = 4, .cell_width = 8, .cell_height = 16, .regions = &.{
+        .{ .first = 2, .last = 11, .image_id = 1, .width = 17, .height = 35, .left = 2, .right = 12, .top = 0, .source_rows = 1, .display = false },
+        .{ .first = 15, .last = 22, .image_id = 2, .width = 32, .height = 12, .left = 15, .right = 23, .top = 0, .source_rows = 1, .display = true },
+    }, .flow = .{ .columns = 32, .rows = &.{ .{ .used = 26, .wrap = false }, .{ .used = 0, .wrap = false }, .{ .used = 0, .wrap = false }, .{ .used = 0, .wrap = false } }, .widths = &@as([128]u2, @splat(1)), .cell_width = 8, .cell_height = 16, .end_row = 4, .scroll = 0 } });
+    try std.testing.expectEqual(@as(i32, 64), p.placements.items[1].x);
+    try std.testing.expectEqual(@as(i32, 48), p.placements.items[1].y + @as(i32, @intCast(p.placements.items[1].height)));
+    try std.testing.expectEqual(@as(i32, 48), p.placements.items[0].y + @as(i32, @intCast(p.placements.items[0].height)));
 }

@@ -46,6 +46,9 @@ pub const Options = struct {
     /// Dollar delimiters are ambiguous in shell output. Explicit delimiters
     /// work by default; dollar recognition is an opt-in heuristic.
     single_dollar: bool = false,
+    /// The host may join explicitly delimited inline math across physical
+    /// output rows. Dollar math remains restricted to one hard line.
+    multiline_paren: bool = false,
     /// Maximum body length. Oversized candidates stay readable as source.
     max_source_bytes: usize = 16 * 1024,
 };
@@ -78,6 +81,10 @@ pub const Iterator = struct {
     /// incomplete formula context cannot leak into the next message.
     boundaries: []const usize = &.{},
     boundary_index: usize = 0,
+    /// Sorted, nonoverlapping source ranges already identified by the host.
+    /// Do not reinterpret their delimiters or consume across these ranges.
+    exclusions: []const Range = &.{},
+    exclusion_index: usize = 0,
 
     pub fn init(source: []const u8, options: Options) Iterator {
         return .{ .source = source, .options = options };
@@ -85,6 +92,12 @@ pub const Iterator = struct {
 
     pub fn next(self: *Iterator) ?Formula {
         while (self.pos < self.source.len) {
+            while (self.exclusion_index < self.exclusions.len and self.exclusions[self.exclusion_index].end <= self.pos)
+                self.exclusion_index += 1;
+            if (self.exclusion_index < self.exclusions.len and self.exclusions[self.exclusion_index].start <= self.pos) {
+                self.pos = self.exclusions[self.exclusion_index].end;
+                continue;
+            }
             while (self.boundary_index < self.boundaries.len and self.boundaries[self.boundary_index] <= self.pos) {
                 self.code_ticks = 0;
                 self.fence_char = 0;
@@ -209,11 +222,13 @@ pub const Iterator = struct {
 
     fn findClose(self: *const Iterator, begin: usize, delimiter: Delimiter) Close {
         var i = begin;
-        const limit = if (self.boundary_index < self.boundaries.len) self.boundaries[self.boundary_index] else self.source.len;
+        var limit = if (self.boundary_index < self.boundaries.len) self.boundaries[self.boundary_index] else self.source.len;
+        if (self.exclusion_index < self.exclusions.len) limit = @min(limit, self.exclusions[self.exclusion_index].start);
         while (i < limit) {
             const c = self.source[i];
             if (c == '\n') {
-                if (!delimiter.display()) return .{ .advance = i };
+                if (!delimiter.display() and !(delimiter == .paren and self.options.multiline_paren))
+                    return .{ .advance = i };
                 // Do not let unfinished block math consume a Markdown fence or
                 // a new paragraph. Resume there so code context remains intact.
                 const end = lineEnd(self.source, i + 1);
@@ -228,7 +243,7 @@ pub const Iterator = struct {
                         i += 1;
                         continue;
                     }
-                    if (delimiter == .dollar and
+                    if ((delimiter == .dollar or delimiter == .paren) and
                         (self.source[i + 1] == '(' or self.source[i + 1] == '['))
                         return .{ .advance = i };
                     const expected: u8 = if (delimiter == .paren) ')' else ']';
@@ -261,6 +276,22 @@ pub const Iterator = struct {
 
 fn lineEnd(source: []const u8, start: usize) usize {
     return if (std.mem.indexOfScalarPos(u8, source, start, '\n')) |n| n else source.len;
+}
+
+test "ghosttex known clipped source cannot consume following delimiters" {
+    const source = "tail\n$$\nheading\n$$\nx=1\n$$\n";
+    var iterator: Iterator = .init(source, .{});
+    iterator.exclusions = &.{.{ .start = 0, .end = "tail\n$$\n".len }};
+    const formula = iterator.next().?;
+    try std.testing.expectEqualStrings("\nx=1\n", formula.body.slice(source));
+    try std.testing.expect(iterator.next() == null);
+
+    const interrupted = "$$\nunfinished\nknown\n\\(next\\)";
+    iterator = .init(interrupted, .{});
+    const at = std.mem.indexOf(u8, interrupted, "known").?;
+    iterator.exclusions = &.{.{ .start = at, .end = at + "known\n".len }};
+    try std.testing.expectEqualStrings("next", iterator.next().?.body.slice(interrupted));
+    try std.testing.expect(iterator.next() == null);
 }
 
 fn run(source: []const u8, start: usize, c: u8) usize {
@@ -407,4 +438,18 @@ test "ghosttex math marked messages stop unfinished code and formulas" {
     try std.testing.expectEqualStrings("visible", iterator.next().?.body.slice(source));
     try std.testing.expectEqualStrings("next", iterator.next().?.body.slice(source));
     try std.testing.expect(iterator.next() == null);
+}
+
+test "ghosttex explicit inline output may wrap without consuming new formulas or code" {
+    const source = "before \\(\\frac{a}{b}\n+c\\) after \\(unfinished\n\\(next\\)\n" ++
+        "\\(unfinished\n```\n\\(code\\)\n```\n\\(last\\)";
+    var it: Iterator = .init(source, .{ .multiline_paren = true });
+    for ([_][]const u8{ "\\frac{a}{b}\n+c", "next", "last" }) |expected|
+        try std.testing.expectEqualStrings(expected, it.next().?.body.slice(source));
+    try std.testing.expect(it.next() == null);
+    const bounded = "\\(unfinished\n\\(next\\)";
+    var messages: Iterator = .init(bounded, .{ .multiline_paren = true });
+    messages.boundaries = &.{"\\(unfinished\n".len};
+    try std.testing.expectEqualStrings("next", messages.next().?.body.slice(bounded));
+    try std.testing.expect(messages.next() == null);
 }

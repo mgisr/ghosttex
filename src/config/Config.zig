@@ -128,22 +128,13 @@ language: ?[:0]const u8 = null,
 
 /// Render closed Markdown math in output using native RaTeX. Requires a build
 /// with `-Dmath=true`. The logical PTY grid and copied source remain unchanged.
-/// Alternate screens, mouse-reporting applications, and unknown Markdown
-/// context retain source. Configure protected rows for a fixed-input CLI.
-@"math-rendering": bool = false,
+/// Visual flow maps back to the original cells; logical VT geometry is unchanged.
+/// Unknown Markdown context and the row containing the cursor retain source.
+@"math-rendering": bool = @import("build_options").math,
 
 /// Recognize heuristic single-dollar math in addition to explicit delimiters.
 /// Leave disabled for arbitrary shell output containing prices or variables.
 @"math-single-dollar": bool = false,
-
-/// Treat output as original Markdown, overriding guards for CLIs known to
-/// remove math/code delimiters. Use only with an adapter preserving source.
-/// This cannot reconstruct Markdown already transformed by a CLI.
-@"math-raw-output": bool = false,
-
-/// Number of bottom rows to keep at their application coordinates while the
-/// viewport follows live output. The cursor's row is always protected too.
-@"math-protected-bottom-rows": u16 = 0,
 
 /// The font families to use.
 ///

@@ -185,12 +185,28 @@ pub const State = struct {
                 entry.math_used = self.math_tick;
             }
         }
-        const bottom: i32 = @intCast(@as(u32, screen.projection.body_end) * cell_height);
+        const bottom: i32 = @intCast(@as(u32, screen.projection.rows) * cell_height);
         for (screen.projection.placements.items) |placement| {
-            const top = @max(0, placement.y);
-            const end = @min(bottom, placement.y + @as(i32, @intCast(placement.height)));
+            const top = @max(0, placement.y, placement.clip_top);
+            const end = @min(bottom, placement.clip_bottom, placement.y + @as(i32, @intCast(placement.height)));
             if (end <= top) continue;
-            try self.math_placements.append(alloc, .{ .image_id = .{ .math = placement.image_id }, .layer = .above_text, .x = @divFloor(placement.x, @as(i32, @intCast(cell_width))), .y = @divFloor(top, @as(i32, @intCast(cell_height))), .z = 0, .width = placement.width, .height = @intCast(end - top), .cell_offset_x = @intCast(@mod(placement.x, @as(i32, @intCast(cell_width)))), .cell_offset_y = @intCast(@mod(top, @as(i32, @intCast(cell_height)))), .source_x = 0, .source_y = placement.source_y + @as(u32, @intCast(top - placement.y)), .source_width = placement.width, .source_height = @intCast(end - top) });
+            const source_top: u32 = @intCast(@as(u64, @intCast(top - placement.y)) * placement.source_height / placement.height);
+            const source_end: u32 = @intCast(@min(placement.source_height, (@as(u64, @intCast(end - placement.y)) * placement.source_height + placement.height - 1) / placement.height));
+            try self.math_placements.append(alloc, .{
+                .image_id = .{ .math = placement.image_id },
+                .layer = .above_text,
+                .x = @divFloor(placement.x, @as(i32, @intCast(cell_width))),
+                .y = @divFloor(top, @as(i32, @intCast(cell_height))),
+                .z = 0,
+                .width = placement.width,
+                .height = @intCast(end - top),
+                .cell_offset_x = @intCast(@mod(placement.x, @as(i32, @intCast(cell_width)))),
+                .cell_offset_y = @intCast(@mod(top, @as(i32, @intCast(cell_height)))),
+                .source_x = 0,
+                .source_y = source_top,
+                .source_width = placement.source_width,
+                .source_height = source_end - source_top,
+            });
         }
     }
 

@@ -158,3 +158,19 @@ test "ghosttex native ABI dimensions alpha and fallback" {
     }, &diagnostic));
     try std.testing.expect(diagnostic[0] != 0);
 }
+
+test "ghosttex native continued fraction from clipped scroll reproduction" {
+    if (comptime !available) return error.SkipZigTest;
+    var diagnostic: [256]u8 = undefined;
+    var image = render("\\varphi\n=\n1+\\cfrac{1}{\n1+\\cfrac{1}{\n1+\\cfrac{1}{1+\\ddots}\n}}\n=\n\\frac{1+\\sqrt5}{2}", .{
+        .font_px = 20,
+        .max_width = 540,
+        .display = true,
+        .color = .{ 255, 255, 255, 255 },
+    }, &diagnostic) catch |err| {
+        std.debug.print("continued fraction render failed: {s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+        return err;
+    };
+    defer image.deinit();
+    try std.testing.expect(image.raw.width > 0);
+}

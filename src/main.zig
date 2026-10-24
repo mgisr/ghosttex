@@ -38,5 +38,4 @@ test {
     _ = @import("math/Native.zig");
     _ = @import("math/Layout.zig");
     _ = @import("math/Screen.zig");
-    _ = @import("math/Interaction.zig");
 }
