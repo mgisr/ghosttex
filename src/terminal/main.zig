@@ -18,6 +18,7 @@ pub const focus = @import("focus.zig");
 pub const formatter = @import("formatter.zig");
 pub const highlight = @import("highlight.zig");
 pub const kitty = @import("kitty.zig");
+pub const markdown_math = @import("markdown_math.zig");
 pub const modes = @import("modes.zig");
 pub const page = @import("page.zig");
 pub const parse_table = @import("parse_table.zig");
@@ -102,6 +103,7 @@ test {
     _ = @import("fraction.zig");
     _ = @import("hash_map.zig");
     _ = @import("mem.zig");
+    _ = @import("markdown_math_test.zig");
     _ = @import("ref_counted_set.zig");
     _ = @import("size.zig");
 }

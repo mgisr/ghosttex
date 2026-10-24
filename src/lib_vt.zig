@@ -585,6 +585,8 @@ test {
     @import("std").testing.log_level = std.log.Level.err;
 
     _ = terminal;
+    _ = @import("terminal/markdown_math.zig");
+    _ = @import("terminal/markdown_math_test.zig");
     _ = @import("lib/main.zig");
     @import("std").testing.refAllDecls(input);
     @import("std").testing.refAllDecls(unicode);
