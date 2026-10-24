@@ -35,4 +35,5 @@ vgcore.*
 /native/ghosttex-math/target/
 /scripts/__pycache__/
 /test/ghosttex/__pycache__/
-/dist/ghosttex-macos-*/
+# Local Ghosttex app bundles, test packages, archives, and checksums.
+/dist/ghosttex-*/

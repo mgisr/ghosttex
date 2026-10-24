@@ -1,234 +1,83 @@
-> **Ghosttex** is a Ghostty fork exploring native Markdown math rendering with
-> RaTeX. The initial validation target is Linux + Codex CLI. See
-> [the Ghosttex scope and implementation plan](GHOSTTEX.md) for supported syntax,
-> architecture, milestones, and acceptance criteria. An experimental native math
-> renderer is available with `zig build -Dmath=true` and `math-rendering = true`.
-> Release validation is still in progress. The documentation below describes
-> the upstream Ghostty base.
-
-<!-- LOGO -->
-<h1>
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/fe853809-ba8b-400b-83ab-a9a0da25be8a" alt="Logo" width="128">
-  <br>Ghostty
-</h1>
-  <p align="center">
-    Fast, native, feature-rich terminal emulator pushing modern features.
-    <br />
-    A native GUI or embeddable library via <code>libghostty</code>.
-    <br />
-    <a href="#about">About</a>
-    ·
-    <a href="https://ghostty.org/download">Download</a>
-    ·
-    <a href="https://ghostty.org/docs">Documentation</a>
-    ·
-    <a href="CONTRIBUTING.md">Contributing</a>
-    ·
-    <a href="HACKING.md">Developing</a>
-  </p>
+  <img src="images/ghosttex-icon.png" width="160" alt="Ghosttex 图标：终端幽灵与求和符号">
 </p>
 
-## About
+<h1 align="center">Ghosttex</h1>
+<p align="center">A native terminal with native TeX rendering.</p>
 
-Ghostty is a terminal emulator that differentiates itself by being
-fast, feature-rich, and native. While there are many excellent terminal
-emulators available, they all force you to choose between speed,
-features, or native UIs. Ghostty provides all three.
+Ghosttex 基于 [Ghostty](https://github.com/ghostty-org/ghostty)，在终端内部识别、排版和缓存 TeX 公式。公式与普通文字共用终端绘制路径，无需为 shell 中的程序添加专用适配器。
 
-**`libghostty`** is a cross-platform, zero-dependency C and Zig library
-for building terminal emulators or utilizing terminal functionality
-(such as style parsing). Anyone can use `libghostty` to build a terminal
-emulator or embed a terminal into their own applications. See
-[Ghostling](https://github.com/ghostty-org/ghostling) for a minimal complete project
-example or the [`examples` directory](https://github.com/ghostty-org/ghostty/tree/main/example)
-for smaller examples of using `libghostty` in C and Zig.
+> **实验阶段，暂缓正式发布。** 当前 0.1.1 用于动态布局测试。编译为 ReleaseFast 表示启用了编译优化，不代表已经完成日常使用验收。真实程序中的快速滚动、选择、输入和局部刷新仍需验证。
 
-For more details, see [About Ghostty](https://ghostty.org/docs/about).
+## 能做什么
 
-## Download
+- **原生公式排版**：使用 RaTeX 和透明图像缓存，支持 `\(...\)`、`\[...\]`、`$$...$$`，可选启用 `$...$`。
+- **行内动态布局**：按公式实际宽度排正文，只增高需要空间的视觉行；公式与相邻正文底部对齐，普通文字行不全局增高。
+- **行间公式居中**：独立公式块在其区域内居中，已验证的跨视口片段复用完整图像并裁剪。
+- **保留逻辑网格**：源码、PTY 尺寸和 VT 坐标保持原样，视觉位置映射回原始字符，供鼠标、选择、光标及 IME 使用。
+- **与程序无关**：不识别程序名称、版本或界面特征。程序已请求鼠标报告或备用屏幕滚轮转按键时，完整转交滚轮事件。
 
-See the [download page](https://ghostty.org/download) on the Ghostty website.
+当前验证重点是 **macOS / Metal**。Linux / OpenGL 共用布局代码，但本轮未完成 Linux GUI 验证；Windows 图标资源已同步，不表示已有可用的 Windows 版本。
 
-## Documentation
+## 构建 macOS 测试包
 
-See the [documentation](https://ghostty.org/docs) on the Ghostty website.
+需要仓库指定的 **Zig 0.17.0**、**Rust 1.90.0**、Xcode 26+、macOS 26 SDK 和 Metal Toolchain。先完成 Xcode 首次启动及所需组件安装。
 
-## Contributing and Developing
-
-If you have any ideas, issues, etc. regarding Ghostty, or would like to
-contribute to Ghostty through pull requests, please check out our
-["Contributing to Ghostty"](CONTRIBUTING.md) document. Those who would like
-to get involved with Ghostty's development as well should also read the
-["Developing Ghostty"](HACKING.md) document for more technical details.
-
-## Roadmap and Status
-
-Ghostty is stable and in use by millions of people and machines daily.
-
-The high-level ambitious plan for the project, in order:
-
-|  #  | Step                                                    | Status |
-| :-: | ------------------------------------------------------- | :----: |
-|  1  | Standards-compliant terminal emulation                  |   ✅   |
-|  2  | Competitive performance                                 |   ✅   |
-|  3  | Rich windowing features -- multi-window, tabbing, panes |   ✅   |
-|  4  | Native Platform Experiences                             |   ✅   |
-|  5  | Cross-platform `libghostty` for Embeddable Terminals    |   ✅   |
-|  6  | Ghostty-only Terminal Control Sequences                 |   ❌   |
-
-Additional details for each step in the big roadmap below:
-
-#### Standards-Compliant Terminal Emulation
-
-Ghostty implements all of the regularly used control sequences and
-can run every mainstream terminal program without issue. For legacy sequences,
-we've done a [comprehensive xterm audit](https://github.com/ghostty-org/ghostty/issues/632)
-comparing Ghostty's behavior to xterm and building a set of conformance
-test cases.
-
-In addition to legacy sequences (what you'd call real "terminal" emulation),
-Ghostty also supports more modern sequences than almost any other terminal
-emulator. These features include things like the Kitty graphics protocol,
-Kitty image protocol, clipboard sequences, synchronized rendering,
-light/dark mode notifications, and many, many more.
-
-We believe Ghostty is one of the most compliant and feature-rich terminal
-emulators available.
-
-Terminal behavior is partially a de jure standard
-(i.e. [ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/))
-but mostly a de facto standard as defined by popular terminal emulators
-worldwide. Ghostty takes the approach that our behavior is defined by
-(1) standards, if available, (2) xterm, if the feature exists, (3)
-other popular terminals, in that order. This defines what the Ghostty project
-views as a "standard."
-
-#### Competitive Performance
-
-Ghostty is generally in the same performance category as the other highest
-performing terminal emulators.
-
-"The same performance category" means that Ghostty is much faster than
-traditional or "slow" terminals and is within an unnoticeable margin of the
-well-known "fast" terminals. For example, Ghostty and Alacritty are usually within
-a few percentage points of each other on various benchmarks, but are both
-something like 100x faster than Terminal.app and iTerm. However, Ghostty
-is much more feature rich than Alacritty and has a much more native app
-experience.
-
-This performance is achieved through high-level architectural decisions and
-low-level optimizations. At a high-level, Ghostty has a multi-threaded
-architecture with a dedicated read thread, write thread, and render thread
-per terminal. Our renderer uses OpenGL on Linux and Metal on macOS.
-Our read thread has a heavily optimized terminal parser that leverages
-CPU-specific SIMD instructions. Etc.
-
-#### Rich Windowing Features
-
-The Mac and Linux (build with GTK) apps support multi-window, tabbing, and
-splits with additional features such as tab renaming, coloring, etc. These
-features allow for a higher degree of organization and customization than
-single-window terminals.
-
-#### Native Platform Experiences
-
-Ghostty is a cross-platform terminal emulator but we don't aim for a
-least-common-denominator experience. There is a large, shared core written
-in Zig but we do a lot of platform-native things:
-
-- The macOS app is a true SwiftUI-based application with all the things you
-  would expect such as real windowing, menu bars, a settings GUI, etc.
-- macOS uses a true Metal renderer with CoreText for font discovery.
-- macOS supports AppleScript, Apple Shortcuts (AppIntents), etc.
-- The Linux app is built with GTK.
-- The Linux app integrates deeply with systemd if available for things
-  like always-on, new windows in a single instance, cgroup isolation, etc.
-
-Our goal with Ghostty is for users of whatever platform they run Ghostty
-on to think that Ghostty was built for their platform first and maybe even
-exclusively. We want Ghostty to feel like a native app on every platform,
-for the best definition of "native" on each platform.
-
-#### Cross-platform `libghostty` for Embeddable Terminals
-
-In addition to being a standalone terminal emulator, Ghostty is a
-C-compatible library for embedding a fast, feature-rich terminal emulator
-in any 3rd party project. This library is called `libghostty`.
-
-Due to the scope of this project, we're breaking libghostty down into
-separate libraries, starting with `libghostty-vt`. The goal of
-this project is to focus on parsing terminal sequences and maintaining
-terminal state. This is covered in more detail in this
-[blog post](https://mitchellh.com/writing/libghostty-is-coming).
-
-`libghostty-vt` is already available and usable today for Zig and C and
-is compatible for macOS, Linux, Windows, and WebAssembly. The functionality
-is extremely stable (since its been proven in Ghostty GUI for a long time),
-but the API signatures are still in flux.
-
-`libghostty` is already heavily in use. See [`examples`](https://github.com/ghostty-org/ghostty/tree/main/example)
-for small examples of using `libghostty` in C and Zig or the
-[Ghostling](https://github.com/ghostty-org/ghostling) project for a
-complete example. See [awesome-libghostty](https://github.com/Uzaaft/awesome-libghostty)
-for a list of projects and resources related to `libghostty`.
-
-We haven't tagged libghostty with a version yet and we're still working
-on a better docs experience, but our [Doxygen website](https://libghostty.tip.ghostty.org/)
-is a good resource for the C API.
-
-#### Ghostty-only Terminal Control Sequences
-
-We want and believe that terminal applications can and should be able
-to do so much more. We've worked hard to support a wide variety of modern
-sequences created by other terminal emulators towards this end, but we also
-want to fill the gaps by creating our own sequences.
-
-We've been hesitant to do this up until now because we don't want to create
-more fragmentation in the terminal ecosystem by creating sequences that only
-work in Ghostty. But, we do want to balance that with the desire to push the
-terminal forward with stagnant standards and the slow pace of change in the
-terminal ecosystem.
-
-We haven't done any of this yet.
-
-## Crash Reports
-
-Ghostty has a built-in crash reporter that will generate and save crash
-reports to disk. The crash reports are saved to the `$XDG_STATE_HOME/ghostty/crash`
-directory. If `$XDG_STATE_HOME` is not set, the default is `~/.local/state`.
-**Crash reports are _not_ automatically sent anywhere off your machine.**
-
-Crash reports are only generated the next time Ghostty is started after a
-crash. If Ghostty crashes and you want to generate a crash report, you must
-restart Ghostty at least once. You should see a message in the log that a
-crash report was generated.
-
-> [!NOTE]
->
-> Use the `ghostty +crash-report` CLI command to get a list of available crash
-> reports. A future version of Ghostty will make the contents of the crash
-> reports more easily viewable through the CLI and GUI.
-
-Crash reports end in the `.ghosttycrash` extension. The crash reports are in
-[Sentry envelope format](https://develop.sentry.dev/sdk/envelopes/). You can
-upload these to your own Sentry account to view their contents, but the format
-is also publicly documented so any other available tools can also be used.
-The `ghostty +crash-report` CLI command can be used to list any crash reports.
-A future version of Ghostty will show you the contents of the crash report
-directly in the terminal.
-
-To send the crash report to the Ghostty project, you can use the following
-CLI command using the [Sentry CLI](https://docs.sentry.io/cli/installation/):
-
-```shell-session
-SENTRY_DSN=https://e914ee84fd895c4fe324afa3e53dac76@o4507352570920960.ingest.us.sentry.io/4507850923638784 sentry-cli send-envelope --raw <path to ghostty crash>
+```sh
+rustup toolchain install 1.90.0 --profile minimal
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  bash scripts/build-macos.sh "$PWD/dist/ghosttex-macos-local"
 ```
 
-> [!WARNING]
->
-> The crash report can contain sensitive information. The report doesn't
-> purposely contain sensitive information, but it does contain the full
-> stack memory of each thread at the time of the crash. This information
-> is used to rebuild the stack trace but can also contain sensitive data
-> depending on when the crash occurred.
+输出目录包含 `Ghosttex.app`、ZIP 和 SHA-256。每次构建需使用新的输出目录。脚本以 **ReleaseFast** 构建核心、以优化的 **ReleaseLocal** 配置构建 macOS 界面，不覆盖已安装的应用，也不修改用户配置。
+
+```sh
+"$PWD/dist/ghosttex-macos-local/Ghosttex.app/Contents/MacOS/ghosttex"
+```
+
+应用使用本地 ad hoc 签名，未进行 Developer ID 签名或公证。Ghosttex 不连接上游 Ghostty 的自动更新源；本仓库没有将测试构建视为正式发行版。
+
+## 配置
+
+macOS 配置文件位于：
+
+```text
+~/Library/Application Support/org.ghosttex.terminal/config.ghosttex
+```
+
+也支持 `~/.config/ghosttex/config.ghosttex`。数学构建默认启用公式渲染，可显式设置：
+
+```ini
+math-rendering = true
+math-single-dollar = false
+keybind = ctrl+shift+m=toggle_math_rendering
+```
+
+单美元符号与价格、shell 变量可能存在歧义，因此默认关闭。未闭合、上下文未知、正在编辑或排版失败的公式保留源码。程序如果已经把 TeX 转换成其他字符，终端无法恢复未收到的源码。
+
+## 验证与当前边界
+
+```sh
+zig test src/math/Viewport.zig
+zig build test -Dmath=true -Doptimize=ReleaseFast \
+  -Dxcframework-target=native -Demit-macos-app=false -Dtest-filter=ghosttex
+cargo test --locked --manifest-path native/ghosttex-math/Cargo.toml
+```
+
+回归覆盖行高、底部对齐、横向间距、宽字符、命中映射、IME、帧提交回退，以及主/备用屏幕下的双向滚动、源码、光标和 VT 模式。macOS 包还可检查签名、默认配置、启动和原生 VT 回复：
+
+```sh
+python3 test/ghosttex/verify_macos_release.py /path/to/Ghosttex.app
+```
+
+程序通过 VT 协议声明的滚动边界会限制视觉投影范围；没有声明边界时，终端不会猜测固定输入栏。未曾完整观察过或匹配有歧义的公式片段继续显示源码。通用动态布局尚未完成真实程序交互验收，不能承诺兼容任意 TUI 的固定区域及刷新方式。
+
+架构、缓存限制、依赖和验证细节见 [GHOSTTEX.md](GHOSTTEX.md)。
+
+## 项目归属
+
+Ghosttex 是独立维护的 Ghostty 分支。保留 Ghostty 的许可证、版权与上游归属；原上游介绍存档于 [docs/upstream/README.md](docs/upstream/README.md)。
+
+为保留兼容性，`xterm-ghostty` terminfo、`ghostty_*` C ABI、部分库/模块和资源文件名继续使用上游标识。应用名称、配置目录、菜单和命令行品牌为 Ghosttex。
+
+新图标基于上游 Ghostty 图标衍生，使用内置图像生成工具制作；[图标源图](images/ghosttex-icon.png)与[生成提示及来源记录](images/ghosttex-icon-prompt.txt)随仓库保存。
