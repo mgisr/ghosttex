@@ -8,7 +8,7 @@
 
 Ghosttex is a [Ghostty](https://github.com/ghostty-org/ghostty) fork that detects, typesets, and caches TeX formulas inside the terminal. Formulas and ordinary text share the terminal rendering pipeline, without adapters for individual shell programs.
 
-**Current release: 0.1.1.** Download the macOS Apple Silicon package and SHA-256 checksum from [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest). Dynamic formula layout is still being improved. Automated checks and known limits are described below; fast scrolling, selection, input, and partial redraws in real programs need continued validation.
+**Current release: 0.1.2.** Download the macOS Apple Silicon package and SHA-256 checksum from [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest). Dynamic formula layout is still being improved. Automated checks and known limits are described below; fast scrolling, selection, input, and partial redraws in real programs need continued validation.
 
 ## Install on macOS
 
@@ -51,6 +51,8 @@ keybind = ctrl+shift+m=toggle_math_rendering
 ```
 
 Single-dollar syntax can conflict with prices and shell variables, so it is off by default. Unclosed formulas, unknown context, active edits, and typesetting failures retain their source text. If a program has already converted TeX into other characters, the terminal cannot restore source it never received.
+
+When single-dollar recognition is enabled, balanced shell substitutions and parameter expansions are kept as source when pairing dollars would cross into another expansion or quoted word. Ordinary `$x$`, `$(x+y)^2$`, and `${x_i}$` formulas remain supported. Recognition is lexical and independent of the program producing the text; single-dollar syntax remains a heuristic.
 
 ## Build a macOS Release package
 

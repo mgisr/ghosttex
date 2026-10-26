@@ -8,7 +8,7 @@
 
 Ghosttex 基于 [Ghostty](https://github.com/ghostty-org/ghostty)，在终端内部识别、排版和缓存 TeX 公式。公式与普通文字共用终端绘制路径，无需为 shell 中的程序添加专用适配器。
 
-**当前发布版本：0.1.1。** 从 [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest) 下载 macOS Apple Silicon 安装包及 SHA-256 校验文件。动态公式布局仍在持续改进；发布包通过的自动检查及已知限制见下文，真实程序中的快速滚动、选择、输入和局部刷新仍需持续验证。
+**当前发布版本：0.1.2。** 从 [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest) 下载 macOS Apple Silicon 安装包及 SHA-256 校验文件。动态公式布局仍在持续改进；发布包通过的自动检查及已知限制见下文，真实程序中的快速滚动、选择、输入和局部刷新仍需持续验证。
 
 解压 ZIP 后，将 `Ghosttex.app` 拖入 `/Applications`，再从应用程序目录打开。安装包使用本地 ad hoc 签名，未进行 Developer ID 签名或公证，macOS 可能要求在“系统设置 → 隐私与安全性”中允许首次打开。当前仅提供 arm64 安装包，并在本机 macOS 27.0.1 上验证；更早系统尚未验收。
 
@@ -57,6 +57,8 @@ keybind = ctrl+shift+m=toggle_math_rendering
 ```
 
 单美元符号与价格、shell 变量可能存在歧义，因此默认关闭。未闭合、上下文未知、正在编辑或排版失败的公式保留源码。程序如果已经把 TeX 转换成其他字符，终端无法恢复未收到的源码。
+
+开启单美元识别后，配对若会跨入另一处 Shell 展开或引号外的词，已闭合的命令替换和参数展开保留源码；普通 `$x$`、`$(x+y)^2$`、`${x_i}$` 公式继续支持。这是与输出程序无关的词法识别，单美元语法仍存在固有歧义。
 
 ## 验证与当前边界
 

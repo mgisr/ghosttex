@@ -16,7 +16,7 @@ if [[ "$(zig version)" != 0.17.0 ]]; then
   echo 'This source tree requires Zig 0.17.0.' >&2
   exit 1
 fi
-xcode_version="$(xcodebuild -version | awk '/^Xcode / { print $2; exit }')"
+xcode_version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
 sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
 if [[ "${xcode_version%%.*}" -lt 26 || "${sdk_version%%.*}" -lt 26 ]]; then
   echo 'Select Xcode 26+ with the macOS 26 SDK before building.' >&2
@@ -42,7 +42,7 @@ stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/ghosttex-macos.XXXXXX")"
 trap 'rm -rf "$stage_dir"' EXIT
 # The Rust library is built for this Mac. A universal XCFramework would also
 # need a separate Rust build for the other architecture.
-zig build -Doptimize=ReleaseFast -Dversion-string=0.1.1 -Dmath=true -Dxcframework-target=native \
+zig build -Doptimize=ReleaseFast -Dversion-string=0.1.2 -Dmath=true -Dxcframework-target=native \
   -Demit-macos-app=true -Demit-xcframework=true -Demit-docs=false \
   --prefix "$stage_dir/install"
 
@@ -50,7 +50,7 @@ cp -R "$stage_dir/install/Ghosttex.app" "$app_path"
 cp "$stage_dir/install/bin/ghosttex-math-worker" "$app_path/Contents/MacOS/"
 mkdir -p "$app_path/Contents/Resources/ghosttex-licenses"
 cp "$stage_dir/install/share/ghosttex/licenses/"* "$app_path/Contents/Resources/ghosttex-licenses/"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 0.1.1' "$app_path/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 0.1.2' "$app_path/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :GhosttexBuild ReleaseFast' "$app_path/Contents/Info.plist"
 codesign --force --sign - --timestamp=none "$app_path/Contents/MacOS/ghosttex-math-worker"
 codesign --force --deep --sign - --timestamp=none "$app_path"
