@@ -5,6 +5,38 @@ const math = @import("markdown_math.zig");
 const formatter = @import("formatter.zig");
 const Terminal = @import("Terminal.zig");
 
+test "ghosttex shell substitution colors fragments and soft wraps retain dollar math" {
+    const alloc = std.testing.allocator;
+    var terminal = try Terminal.init(std.testing.io, alloc, .{ .cols = 32, .rows = 14 });
+    defer terminal.deinit(alloc);
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    const command = "Running DB_URL=\"$(cat /tmp/local-dsn)\" RELAY=\"http://127.0.0.1:$(cat /tmp/port)\"";
+    const output = "\x1b[32m" ++ command ++ "\x1b[0m\r\n正文 $x^2$ and $(a+b)^2$\r\n";
+    var text: std.Io.Writer.Allocating = .init(alloc);
+    defer text.deinit();
+    // Observe each immutable terminal snapshot, including snapshots cut just
+    // after the second '$' and those crossing physical auto-wrap boundaries.
+    for (output) |byte| {
+        stream.nextSlice(&.{byte});
+        text.clearRetainingCapacity();
+        var fmt: formatter.ScreenFormatter = .init(terminal.screens.active, .{ .emit = .plain, .unwrap = true, .trim = false });
+        try fmt.format(&text.writer);
+        const source = text.writer.buffered();
+        var it: math.Iterator = .init(source, .{ .single_dollar = true });
+        while (it.next()) |formula| {
+            const body = formula.body.slice(source);
+            try std.testing.expect(std.mem.eql(u8, body, "x^2") or std.mem.eql(u8, body, "(a+b)^2"));
+        }
+    }
+    const source = text.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, source, command) != null);
+    var it: math.Iterator = .init(source, .{ .single_dollar = true });
+    try std.testing.expectEqualStrings("x^2", it.next().?.body.slice(source));
+    try std.testing.expectEqualStrings("(a+b)^2", it.next().?.body.slice(source));
+    try std.testing.expect(it.next() == null);
+}
+
 test "ghosttex math terminal byte fragments ANSI Unicode and soft wrapping" {
     const alloc = std.testing.allocator;
     var terminal = try Terminal.init(std.testing.io, alloc, .{ .cols = 10, .rows = 16 });

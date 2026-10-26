@@ -167,6 +167,26 @@ pub const Iterator = struct {
             const width: usize = if (delimiter == .dollar) 1 else 2;
             const body_start = start + width;
             const result = self.findClose(body_start, delimiter);
+            if (delimiter == .dollar and expansionOpen(self.source, start) != null) {
+                if (self.expansionEnd(start)) |end| {
+                    // A closing dollar inside a substitution, another shell
+                    // expansion, or the next quoted word is not its math end.
+                    // Keep real $(x)^2$ and ${x_i}$ formulas: a balanced shell
+                    // prefix alone cannot disqualify mathematical parentheses.
+                    const close = result.close;
+                    if (close == null or close.? < end or (close.? != end and
+                        (expansionOpen(self.source, close.?) != null or self.crossesQuote(start, end, close.?))))
+                    {
+                        self.pos = end;
+                        continue;
+                    }
+                } else {
+                    // Incomplete snapshots must not expose dollars inside an
+                    // unfinished substitution as independent inline formulas.
+                    self.pos = self.expansionLimit(start);
+                    continue;
+                }
+            }
             self.pos = result.advance;
             if (result.close) |close| {
                 if (close - body_start > self.options.max_source_bytes) continue;
@@ -218,6 +238,88 @@ pub const Iterator = struct {
         return true;
     }
 
+    /// Bound shell-like expansion scanning to this immutable source region.
+    /// This is lexical exclusion, never command or application detection.
+    fn expansionEnd(self: *const Iterator, start: usize) ?usize {
+        const close = expansionOpen(self.source, start) orelse return null;
+        const limit = self.expansionLimit(start);
+        const Frame = struct { close: u8, quote: u8 = 0 };
+        var stack: [64]Frame = undefined;
+        stack[0] = .{ .close = close };
+        var depth: usize = 1;
+        var i = start + 2;
+        while (i < limit) {
+            const frame = &stack[depth - 1];
+            const c = self.source[i];
+            if (c == '\\' and frame.quote != '\'') {
+                i += @min(@as(usize, 2), limit - i);
+                continue;
+            }
+            if (frame.quote == '\'' or frame.quote == '`') {
+                if (c == frame.quote) frame.quote = 0;
+                i += 1;
+                continue;
+            }
+            if (expansionOpen(self.source[0..limit], i)) |nested| {
+                if (depth == stack.len) return null;
+                stack[depth] = .{ .close = nested };
+                depth += 1;
+                i += 2;
+                continue;
+            }
+            if (frame.quote != 0) {
+                if (c == frame.quote) frame.quote = 0;
+            } else if (c == '"' or c == '\'' or c == '`') {
+                frame.quote = c;
+            } else if (c == '(' or c == '{') {
+                if (depth == stack.len) return null;
+                stack[depth] = .{ .close = if (c == '(') ')' else '}' };
+                depth += 1;
+            } else if (c == frame.close) {
+                depth -= 1;
+                if (depth == 0) return i + 1;
+            }
+            i += 1;
+        }
+        return null;
+    }
+
+    fn expansionLimit(self: *const Iterator, start: usize) usize {
+        var limit = @min(lineEnd(self.source, start), start + @min(self.options.max_source_bytes, self.source.len - start));
+        if (self.boundary_index < self.boundaries.len) limit = @min(limit, self.boundaries[self.boundary_index]);
+        if (self.exclusion_index < self.exclusions.len) limit = @min(limit, self.exclusions[self.exclusion_index].start);
+        // Even a zero source budget must advance beyond the opening dollar.
+        return @max(start + 1, limit);
+    }
+
+    fn crossesQuote(self: *const Iterator, start: usize, end: usize, close: usize) bool {
+        var line_start = start;
+        while (line_start > 0 and self.source[line_start - 1] != '\n') : (line_start -= 1) {}
+        if (self.boundary_index > 0) line_start = @max(line_start, self.boundaries[self.boundary_index - 1]);
+        var quote: u8 = 0;
+        var i = line_start;
+        while (i < start) : (i += 1) {
+            const c = self.source[i];
+            if (c == '\\' and quote != '\'') {
+                i += 1;
+            } else if (quote != 0) {
+                if (c == quote) quote = 0;
+            } else if (c == '"' or c == '\'') {
+                quote = c;
+            }
+        }
+        if (quote == 0) return false;
+        i = end;
+        while (i < close) : (i += 1) {
+            if (self.source[i] == '\\') {
+                i += 1;
+            } else if (self.source[i] == quote) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     const Close = struct { close: ?usize = null, advance: usize };
 
     fn findClose(self: *const Iterator, begin: usize, delimiter: Delimiter) Close {
@@ -263,6 +365,9 @@ pub const Iterator = struct {
                     (i > begin and !whitespace(self.source[i - 1]) and
                         (i + 1 == self.source.len or !word(self.source[i + 1])))))
                     return .{ .close = i, .advance = i + width };
+                // Do not carry an unmatched opener across the next dollar
+                // token and swallow a later, independently valid formula.
+                if (delimiter == .dollar) return .{ .advance = i };
                 i += n;
                 continue;
             }
@@ -273,6 +378,15 @@ pub const Iterator = struct {
         return .{ .advance = i };
     }
 };
+
+fn expansionOpen(source: []const u8, at: usize) ?u8 {
+    if (at + 1 >= source.len or source[at] != '$') return null;
+    return switch (source[at + 1]) {
+        '(' => ')',
+        '{' => '}',
+        else => null,
+    };
+}
 
 fn lineEnd(source: []const u8, start: usize) usize {
     return if (std.mem.indexOfScalarPos(u8, source, start, '\n')) |n| n else source.len;
@@ -380,6 +494,47 @@ test "ghosttex math single dollars opt in and boundary rules" {
     var it: Iterator = .init(source, .{ .single_dollar = true });
     for ([_][]const u8{ "x", "2^2", "y", "ok" }) |expected|
         try std.testing.expectEqualStrings(expected, it.next().?.body.slice(source));
+    try std.testing.expect(it.next() == null);
+}
+
+test "ghosttex dollar math preserves shell expansions without disabling inline formulas" {
+    const cases = [_][]const u8{
+        "DB_URL=\"$(cat /tmp/cache/local-dsn)\" RELAY=\"http://127.0.0.1:$(cat /tmp/cache/port)\"",
+        "DB_URL=$(cat /tmp/dsn) RELAY=$(cat /tmp/port)",
+        "echo $(printf '%s' '$not_math$')",
+        "echo $(cat \"${NAME:-$(cat /tmp/name)}\")",
+        "echo $((1 + $(cat /tmp/number)))",
+        "echo ${ROOT:-/tmp} ${NAME:-default}",
+        "echo $(pwd)/${NAME}",
+        "echo \"$HOME\" \"$PATH\"",
+    };
+    for (cases) |command| {
+        for (0..command.len + 1) |length| {
+            // A trailing '$' alone can be a valid math end. The following
+            // byte is needed to distinguish an unquoted expansion opener.
+            if (length > 0 and length < command.len and command[length - 1] == '$') continue;
+            var partial: Iterator = .init(command[0..length], .{ .single_dollar = true });
+            errdefer std.debug.print("partial shell source: {s}\n", .{command[0..length]});
+            try std.testing.expect(partial.next() == null);
+        }
+        var buffer: [1024]u8 = undefined;
+        const source = try std.fmt.bufPrint(&buffer, "{s} $x^2$ \\(y\\) $$z$$", .{command});
+        var it: Iterator = .init(source, .{ .single_dollar = true });
+        for ([_][]const u8{ "x^2", "y", "z" }) |expected| {
+            const formula = it.next() orelse return error.MissingInlineFormula;
+            try std.testing.expectEqualStrings(expected, formula.body.slice(source));
+        }
+        try std.testing.expect(it.next() == null);
+    }
+}
+
+test "ghosttex dollar math retains parenthesized grouped quoted and adjacent formulas" {
+    const source = "$x$ $(a+b)$ $(a+b)^2$ $(x) + y$ ${x_i}$ $((x+y)/2)$ \"$(x)^2$\" '$(x)^2$' $(x)'$ $x$(y) $(x)$(y) ${x}$(y)";
+    var it: Iterator = .init(source, .{ .single_dollar = true });
+    for ([_][]const u8{ "x", "(a+b)", "(a+b)^2", "(x) + y", "{x_i}", "((x+y)/2)", "(x)^2", "(x)^2", "(x)'", "x", "(x)", "{x}" }) |expected| {
+        const formula = it.next() orelse return error.MissingInlineFormula;
+        try std.testing.expectEqualStrings(expected, formula.body.slice(source));
+    }
     try std.testing.expect(it.next() == null);
 }
 
