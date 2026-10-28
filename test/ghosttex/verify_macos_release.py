@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 app = Path(sys.argv[1]).resolve()
 with (app / 'Contents/Info.plist').open('rb') as stream:
@@ -32,9 +34,24 @@ probe = Path(__file__).with_name('protocol_probe.py').resolve()
 with tempfile.TemporaryDirectory(prefix='ghosttex-release-') as directory:
     directory = Path(directory)
     result = directory / 'protocol.json'
+    # AppKit persists window/defaults state even with config files disabled.
+    # Probe the same binaries under an isolated bundle identity so a running
+    # installation's preferences and saved sessions cannot be overwritten.
+    isolated_app = directory / 'Ghosttex.app'
+    shutil.copytree(app, isolated_app, symlinks=True)
+    isolated_plist = isolated_app / 'Contents/Info.plist'
+    with isolated_plist.open('rb') as stream:
+        isolated_info = plistlib.load(stream)
+    isolated_info['CFBundleIdentifier'] = 'org.ghosttex.release-probe.' + uuid.uuid4().hex
+    with isolated_plist.open('wb') as stream:
+        plistlib.dump(isolated_info, stream)
+    subprocess.run(['codesign', '--force', '--deep', '--sign', '-', '--timestamp=none',
+                    str(isolated_app)], check=True)
+    probe_binary = isolated_app / 'Contents/MacOS/ghosttex'
     with (directory / 'startup.log').open('w') as log:
         process = subprocess.Popen([
-            str(binary), '--config-default-files=false', '--shell-integration=none',
+            str(probe_binary), '--config-default-files=false', '--shell-integration=none',
+            '--window-save-state=never',
             '--quit-after-last-window-closed=true', '-e', sys.executable, str(probe), str(result),
         ], stdout=log, stderr=subprocess.STDOUT)
         saw_worker = False
@@ -57,4 +74,12 @@ with tempfile.TemporaryDirectory(prefix='ghosttex-release-') as directory:
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)
+            subprocess.run([
+                '/System/Library/Frameworks/CoreServices.framework/Frameworks/'
+                'LaunchServices.framework/Support/lsregister', '-u', str(isolated_app),
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(['defaults', 'delete', isolated_info['CFBundleIdentifier']],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(Path.home() / 'Library/Saved Application State' /
+                          (isolated_info['CFBundleIdentifier'] + '.savedState'), ignore_errors=True)
 print('Ghosttex ReleaseFast: branding, icon, signature, default math, startup, and 4/4 VT checks passed.')

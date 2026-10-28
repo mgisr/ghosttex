@@ -8,7 +8,7 @@
 
 Ghosttex is a [Ghostty](https://github.com/ghostty-org/ghostty) fork that detects, typesets, and caches TeX formulas inside the terminal. Formulas and ordinary text share the terminal rendering pipeline, without adapters for individual shell programs.
 
-**Current release: 0.1.2.** Download the macOS Apple Silicon package and SHA-256 checksum from [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest). Dynamic formula layout is still being improved. Automated checks and known limits are described below; fast scrolling, selection, input, and partial redraws in real programs need continued validation.
+**Current release: 0.1.3.** Download the macOS Apple Silicon package and SHA-256 checksum from [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest). Dynamic formula layout is still being improved. Automated checks and known limits are described below; fast scrolling, selection, input, and partial redraws in real programs need continued validation.
 
 ## Install on macOS
 

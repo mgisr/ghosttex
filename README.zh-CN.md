@@ -8,7 +8,7 @@
 
 Ghosttex 基于 [Ghostty](https://github.com/ghostty-org/ghostty)，在终端内部识别、排版和缓存 TeX 公式。公式与普通文字共用终端绘制路径，无需为 shell 中的程序添加专用适配器。
 
-**当前发布版本：0.1.2。** 从 [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest) 下载 macOS Apple Silicon 安装包及 SHA-256 校验文件。动态公式布局仍在持续改进；发布包通过的自动检查及已知限制见下文，真实程序中的快速滚动、选择、输入和局部刷新仍需持续验证。
+**当前发布版本：0.1.3。** 从 [GitHub Releases](https://github.com/mgisr/ghosttex/releases/latest) 下载 macOS Apple Silicon 安装包及 SHA-256 校验文件。动态公式布局仍在持续改进；发布包通过的自动检查及已知限制见下文，真实程序中的快速滚动、选择、输入和局部刷新仍需持续验证。
 
 解压 ZIP 后，将 `Ghosttex.app` 拖入 `/Applications`，再从应用程序目录打开。安装包使用本地 ad hoc 签名，未进行 Developer ID 签名或公证，macOS 可能要求在“系统设置 → 隐私与安全性”中允许首次打开。当前仅提供 arm64 安装包，并在本机 macOS 27.0.1 上验证；更早系统尚未验收。
 
